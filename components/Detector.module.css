@@ -11,7 +11,6 @@
   object-fit: cover;
 }
 
-/* Canvas overlay toont bounding boxes */
 .canvas {
   position: absolute;
   top: 0;
@@ -21,37 +20,46 @@
   pointer-events: none;
 }
 
-/* Groene rand pulsering als het licht groen is */
-.greenFlash {
+/* Statische gekleurde rand (rood) */
+.borderStatic {
   position: absolute;
   inset: 0;
-  border: 8px solid #00ee44;
-  box-shadow: inset 0 0 60px rgba(0, 238, 68, 0.3);
+  border: 8px solid;
   pointer-events: none;
-  animation: pulse 0.8s ease-in-out infinite;
+}
+
+/* Knipperende groene rand */
+.borderFlash {
+  position: absolute;
+  inset: 0;
+  border: 8px solid;
+  pointer-events: none;
+  animation: pulse 0.7s ease-in-out infinite;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  50% { opacity: 0.4; }
 }
 
+/* Header balk bovenin */
 .header {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  padding: 16px;
+  padding: 14px 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.65), transparent);
 }
 
-.title {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+.version {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.3px;
 }
 
 .badgeLoading {
@@ -72,49 +80,49 @@
   color: #ff4444;
 }
 
-/* Indicator onderin met de huidige staat */
+/* Zoom inset — toont het gevonden stoplicht uitvergroot */
+.zoomInset {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  width: 80px;
+  height: 160px;
+  border-radius: 10px;
+  border: 2.5px solid;
+  background: #111;
+  overflow: hidden;
+  image-rendering: pixelated;
+}
+
+/* Staat indicator onderin */
 .indicator {
   position: absolute;
-  bottom: 48px;
+  bottom: 44px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px);
-  border-radius: 28px;
-  padding: 12px 22px;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(10px);
+  border: 1.5px solid;
+  border-radius: 32px;
+  padding: 12px 26px;
   white-space: nowrap;
-  font-size: 15px;
-  font-weight: 600;
 }
 
 .dot {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #555;
   flex-shrink: 0;
+  background: #444;
 }
 
-.dotRed {
-  background: #ff3333;
-  box-shadow: 0 0 10px #ff3333;
-}
-
-.dotYellow {
-  background: #ffcc00;
-  box-shadow: 0 0 10px #ffcc00;
-}
-
-.dotGreen {
-  background: #00ee44;
-  box-shadow: 0 0 10px #00ee44;
-}
-
-.dotUnknown {
-  background: #888;
+.stateText {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
 }
 
 /* Startscherm */
@@ -139,7 +147,7 @@
 
 .splashSub {
   font-size: 16px;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(255, 255, 255, 0.6);
   max-width: 280px;
   line-height: 1.6;
 }
@@ -160,4 +168,10 @@
 .startButton:active {
   opacity: 0.8;
   transform: scale(0.97);
+}
+
+.splashVersion {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.25);
+  margin-top: -12px;
 }

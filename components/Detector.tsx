@@ -3,20 +3,37 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './Detector.module.css';
 
+const VERSION = '1.1.0';
+
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-function playBeep(ctx: AudioContext) {
+// Diepe toon voor rood: stop-signaal (~220 Hz)
+function playDeepBeep(ctx: AudioContext) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
   osc.connect(gain);
   gain.connect(ctx.destination);
   osc.type = 'sine';
-  osc.frequency.value = 880;
-  gain.gain.setValueAtTime(0.7, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+  osc.frequency.value = 220;
+  gain.gain.setValueAtTime(0.85, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.7);
   osc.start(ctx.currentTime);
-  osc.stop(ctx.currentTime + 0.6);
+  osc.stop(ctx.currentTime + 0.8);
+}
+
+// Hoge toon voor groen: rij-signaal (~1100 Hz)
+function playHighBeep(ctx: AudioContext) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.type = 'sine';
+  osc.frequency.value = 1100;
+  gain.gain.setValueAtTime(0.75, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.4);
 }
 
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
@@ -33,53 +50,86 @@ function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   return [h, max > 0 ? d / max : 0, max];
 }
 
-// Deelt de bounding box op in 3 secties (rood boven, geel midden, groen onder)
-// en kijkt welke sectie het helderste gekleurde licht heeft.
+// Gebruikt max-helderheid per sectie i.p.v. gemiddelde — werkt beter voor kleine/verre lichten
 function detectLightColor(
   data: Uint8ClampedArray,
-  imgW: number,
+  imgW: number, imgH: number,
   x: number, y: number, w: number, h: number,
 ): LightState {
-  const sectionH = h / 3;
-  const scores = [0, 0, 0];
-  const counts = [0, 0, 0];
+  const x0 = Math.max(0, Math.floor(x));
+  const y0 = Math.max(0, Math.floor(y));
+  const x1 = Math.min(imgW, Math.floor(x + w));
+  const y1 = Math.min(imgH, Math.floor(y + h));
+  const actualH = y1 - y0;
+  if (actualH < 3) return 'unknown';
 
-  for (let section = 0; section < 3; section++) {
-    const y0 = Math.floor(y + section * sectionH);
-    const y1 = Math.floor(y0 + sectionH);
-    for (let py = Math.max(0, y0); py < y1; py++) {
-      for (let px = Math.max(0, Math.floor(x)); px < Math.floor(x + w); px++) {
-        const i = (py * imgW + px) * 4;
-        const [, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
-        // Gewogen helderheid: hoge saturatie + hoge value = helder gekleurd licht
-        scores[section] += s * v;
-        counts[section]++;
+  const sectionH = actualH / 3;
+  const maxBright = [0, 0, 0];
+  const pixelCount = [0, 0, 0];
+
+  for (let py = y0; py < y1; py++) {
+    const sec = Math.min(2, Math.floor((py - y0) / sectionH));
+    for (let px = x0; px < x1; px++) {
+      const i = (py * imgW + px) * 4;
+      const [, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
+      // Lage drempel: werkt ook bij verre stoplichten met minder saturatie
+      if (s > 0.25 && v > 0.45) {
+        maxBright[sec] = Math.max(maxBright[sec], s * v);
+        pixelCount[sec]++;
       }
     }
   }
 
-  const avg = scores.map((s, i) => (counts[i] > 0 ? s / counts[i] : 0));
-  const maxVal = Math.max(...avg);
+  if (pixelCount.reduce((a, b) => a + b, 0) < 2) return 'unknown';
 
-  // Drempelwaarde: te laag = geen helder licht zichtbaar
-  if (maxVal < 0.12) return 'unknown';
+  // Combineer max-helderheid × log(pixels) zodat een helder cluster zwaarder weegt
+  const score = maxBright.map((m, i) => m * Math.log1p(pixelCount[i]));
+  const max = Math.max(...score);
+  if (max < 0.05) return 'unknown';
 
-  const maxIdx = avg.indexOf(maxVal);
-  return (['red', 'yellow', 'green'] as LightState[])[maxIdx];
+  return (['red', 'yellow', 'green'] as LightState[])[score.indexOf(max)];
 }
 
 export default function Detector() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const zoomRef = useRef<HTMLCanvasElement>(null);
   const modelRef = useRef<any>(null);
   const audioRef = useRef<AudioContext | null>(null);
-  const lastBeepRef = useRef<number>(0);
+  const prevLightRef = useRef<LightState>('none');
+  const noneCountRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
 
   const [status, setStatus] = useState<AppStatus>('idle');
   const [light, setLight] = useState<LightState>('none');
   const [started, setStarted] = useState(false);
+
+  // Piept alleen bij overgang naar een nieuwe staat
+  function handleStateChange(newState: LightState) {
+    setLight(newState);
+    if (newState !== prevLightRef.current && audioRef.current) {
+      if (newState === 'red') playDeepBeep(audioRef.current);
+      else if (newState === 'green') playHighBeep(audioRef.current);
+    }
+    prevLightRef.current = newState;
+  }
+
+  // Tekent het gevonden stoplicht uitvergroot in de inset
+  function updateZoom(srcCanvas: HTMLCanvasElement, bx: number, by: number, bw: number, bh: number) {
+    const zc = zoomRef.current;
+    if (!zc) return;
+    const zCtx = zc.getContext('2d');
+    if (!zCtx) return;
+
+    const pad = Math.max(6, bw * 0.15);
+    const sx = Math.max(0, bx - pad);
+    const sy = Math.max(0, by - pad);
+    const sw = Math.min(srcCanvas.width - sx, bw + pad * 2);
+    const sh = Math.min(srcCanvas.height - sy, bh + pad * 2);
+
+    zCtx.drawImage(srcCanvas, sx, sy, sw, sh, 0, 0, zc.width, zc.height);
+  }
 
   async function runDetection() {
     if (!runningRef.current) return;
@@ -101,45 +151,45 @@ export default function Detector() {
     try {
       const predictions: any[] = await modelRef.current.detect(canvas);
       const trafficLights = predictions.filter(
-        (p) => p.class === 'traffic light' && p.score > 0.45,
+        (p) => p.class === 'traffic light' && p.score > 0.35,
       );
 
       if (trafficLights.length === 0) {
-        setLight('none');
+        // Wacht een paar frames voor we "geen stoplicht" melden — vermijdt flikkering
+        noneCountRef.current++;
+        if (noneCountRef.current >= 4) {
+          handleStateChange('none');
+          const zc = zoomRef.current;
+          if (zc) {
+            const zCtx = zc.getContext('2d');
+            zCtx?.clearRect(0, 0, zc.width, zc.height);
+          }
+        }
       } else {
+        noneCountRef.current = 0;
+
+        // Kies het meest zekere stoplicht
+        const best: any = trafficLights.reduce((a: any, b: any) => (a.score > b.score ? a : b));
+        const [bx, by, bw, bh] = best.bbox as number[];
+
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        let state: LightState = 'unknown';
+        const state = detectLightColor(imageData.data, canvas.width, canvas.height, bx, by, bw, bh);
 
-        for (const tl of trafficLights) {
-          const [bx, by, bw, bh] = tl.bbox as number[];
-          const detected = detectLightColor(imageData.data, canvas.width, bx, by, bw, bh);
-          if (detected !== 'unknown') {
-            state = detected;
-            break;
-          }
-        }
+        handleStateChange(state);
+        updateZoom(canvas, bx, by, bw, bh);
 
-        setLight(state);
-
-        if (state === 'green' && audioRef.current) {
-          const now = Date.now();
-          if (now - lastBeepRef.current > 4000) {
-            lastBeepRef.current = now;
-            playBeep(audioRef.current);
-          }
-        }
-
-        // Teken bounding boxes op canvas
-        ctx.lineWidth = 3;
-        for (const tl of trafficLights) {
-          const [bx, by, bw, bh] = tl.bbox as number[];
-          ctx.strokeStyle =
-            state === 'green' ? '#00ee44' : state === 'red' ? '#ff3333' : '#ffcc00';
-          ctx.strokeRect(bx, by, bw, bh);
-        }
+        // Bounding box op overlay canvas
+        const color =
+          state === 'green' ? '#00ee44'
+          : state === 'red' ? '#ff3333'
+          : state === 'yellow' ? '#ffcc00'
+          : 'rgba(255,255,255,0.6)';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(2, Math.min(6, bw / 15));
+        ctx.strokeRect(bx, by, bw, bh);
       }
     } catch (_) {
-      // stille fout, volgende frame proberen
+      // stille fout, volgende frame
     }
 
     timerRef.current = setTimeout(runDetection, 250);
@@ -148,25 +198,17 @@ export default function Detector() {
   async function start() {
     setStarted(true);
     setStatus('loading');
-
     try {
-      // AudioContext vereist een gebruikersactie — hier aangemaakt na klik
       audioRef.current = new AudioContext();
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
       });
-
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
 
-      // Dynamische import zodat TF.js niet de initiële pagina vertraagt
       const tf = await import('@tensorflow/tfjs');
       await tf.ready();
       const cocoSsd = await import('@tensorflow-models/coco-ssd');
@@ -193,27 +235,33 @@ export default function Detector() {
     };
   }, []);
 
-  const dotClass =
-    light === 'red' ? styles.dotRed
-    : light === 'yellow' ? styles.dotYellow
-    : light === 'green' ? styles.dotGreen
-    : light === 'unknown' ? styles.dotUnknown
-    : styles.dot;
-
   const badgeClass =
     status === 'loading' ? styles.badgeLoading
     : status === 'ready' ? styles.badgeReady
     : styles.badgeError;
+
+  const stateColor =
+    light === 'red' ? '#ff3333'
+    : light === 'yellow' ? '#ffcc00'
+    : light === 'green' ? '#00ee44'
+    : 'rgba(255,255,255,0.4)';
 
   return (
     <div className={styles.root}>
       <video ref={videoRef} className={styles.video} playsInline muted />
       <canvas ref={canvasRef} className={styles.canvas} />
 
-      {light === 'green' && <div className={styles.greenFlash} />}
+      {/* Gekleurde rand als visueel signaal */}
+      {(light === 'red' || light === 'green') && (
+        <div
+          className={light === 'green' ? styles.borderFlash : styles.borderStatic}
+          style={{ borderColor: stateColor, boxShadow: `inset 0 0 60px ${stateColor}33` }}
+        />
+      )}
 
+      {/* Header: versienummer links, status rechts */}
       <div className={styles.header}>
-        <span className={styles.title}>Stoplicht</span>
+        <span className={styles.version}>v{VERSION}</span>
         {started && (
           <span className={badgeClass}>
             {status === 'loading' && 'Laden…'}
@@ -223,28 +271,52 @@ export default function Detector() {
         )}
       </div>
 
+      {/* Zoom inset: toont het gevonden stoplicht uitvergroot */}
+      {started && status === 'ready' && light !== 'none' && (
+        <canvas
+          ref={zoomRef}
+          width={80}
+          height={160}
+          className={styles.zoomInset}
+          style={{ borderColor: stateColor }}
+        />
+      )}
+      {started && status === 'ready' && light === 'none' && (
+        <canvas ref={zoomRef} style={{ display: 'none' }} />
+      )}
+
+      {/* Staat indicator onderin */}
       {started && status === 'ready' && (
-        <div className={styles.indicator}>
-          <div className={`${styles.dot} ${dotClass}`} />
-          <span>
-            {light === 'none' && 'Zoeken naar stoplicht…'}
-            {light === 'unknown' && 'Stoplicht gevonden'}
+        <div className={styles.indicator} style={{ borderColor: `${stateColor}66` }}>
+          <div
+            className={styles.dot}
+            style={{
+              background: stateColor,
+              boxShadow: light !== 'none' && light !== 'unknown'
+                ? `0 0 10px ${stateColor}` : 'none',
+            }}
+          />
+          <span className={styles.stateText} style={{ color: stateColor }}>
+            {light === 'none' && <span style={{ color: 'rgba(255,255,255,0.5)' }}>Zoeken…</span>}
+            {light === 'unknown' && <span style={{ color: 'rgba(255,255,255,0.6)' }}>Stoplicht gevonden</span>}
             {light === 'red' && 'Rood'}
             {light === 'yellow' && 'Oranje'}
-            {light === 'green' && 'GROEN — piep!'}
+            {light === 'green' && 'Groen'}
           </span>
         </div>
       )}
 
+      {/* Startscherm */}
       {!started && (
         <div className={styles.splash}>
           <h1 className={styles.splashTitle}>Stoplicht</h1>
           <p className={styles.splashSub}>
-            Richt de camera op een stoplicht. Je krijgt een piep zodra het groen wordt.
+            Richt de camera op een stoplicht. Diepe toon bij rood, hoge piep bij groen.
           </p>
           <button className={styles.startButton} onClick={start}>
             Start
           </button>
+          <span className={styles.splashVersion}>v{VERSION}</span>
         </div>
       )}
     </div>
