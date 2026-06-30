@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './Detector.module.css';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -50,7 +50,11 @@ function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   return [h, max > 0 ? d / max : 0, max];
 }
 
-// Gebruikt max-helderheid per sectie i.p.v. gemiddelde — werkt beter voor kleine/verre lichten
+// Bepaalt het actieve licht via twee signalen:
+// 1. maxSV: helderste gekleurde pixel per sectie (primair — robuust bij kleine/verre lichten)
+// 2. hueOK: hoe sterk de juiste hue aanwezig is per sectie (bevestiging)
+// Combinatie geeft 50% bonus als positie én hue overeenkomen, zodat groen niet verliest
+// van een sectie met veel zwak gekleurde pixels (behuizing, reflectie).
 function detectLightColor(
   data: Uint8ClampedArray,
   imgW: number, imgH: number,
@@ -62,32 +66,34 @@ function detectLightColor(
   const y1 = Math.min(imgH, Math.floor(y + h));
   const actualH = y1 - y0;
   if (actualH < 3) return 'unknown';
-
   const sectionH = actualH / 3;
-  const maxBright = [0, 0, 0];
-  const pixelCount = [0, 0, 0];
+
+  const maxSV = [0, 0, 0]; // max(s×v) per sectie
+  const hueOK = [0, 0, 0]; // som van s×v van pixels met de juiste hue
 
   for (let py = y0; py < y1; py++) {
     const sec = Math.min(2, Math.floor((py - y0) / sectionH));
     for (let px = x0; px < x1; px++) {
       const i = (py * imgW + px) * 4;
-      const [, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
-      // Lage drempel: werkt ook bij verre stoplichten met minder saturatie
-      if (s > 0.25 && v > 0.45) {
-        maxBright[sec] = Math.max(maxBright[sec], s * v);
-        pixelCount[sec]++;
+      const [h, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
+      // Laagdrempelig: s > 0.15 vangt ook enigszins verzadigde groene LEDs
+      if (v > 0.40 && s > 0.15) {
+        const sv = s * v;
+        if (sv > maxSV[sec]) maxSV[sec] = sv;
+        // Hue-bevestiging: rood boven (sec 0), geel midden (sec 1), groen onder (sec 2)
+        if (sec === 0 && (h <= 25 || h >= 335)) hueOK[0] += sv;
+        if (sec === 1 && h > 25 && h < 75)      hueOK[1] += sv;
+        if (sec === 2 && h >= 70 && h <= 175)   hueOK[2] += sv;
       }
     }
   }
 
-  if (pixelCount.reduce((a, b) => a + b, 0) < 2) return 'unknown';
+  const maxVal = Math.max(...maxSV);
+  if (maxVal < 0.18) return 'unknown';
 
-  // Combineer max-helderheid × log(pixels) zodat een helder cluster zwaarder weegt
-  const score = maxBright.map((m, i) => m * Math.log1p(pixelCount[i]));
-  const max = Math.max(...score);
-  if (max < 0.05) return 'unknown';
-
-  return (['red', 'yellow', 'green'] as LightState[])[score.indexOf(max)];
+  // Gecombineerde score: 50% bonus als hue overeenkomt met sectie-positie
+  const score = maxSV.map((m, i) => m * (hueOK[i] > 0 ? 1.5 : 1.0));
+  return (['red', 'yellow', 'green'] as LightState[])[score.indexOf(Math.max(...score))];
 }
 
 export default function Detector() {
@@ -115,20 +121,21 @@ export default function Detector() {
     prevLightRef.current = newState;
   }
 
-  // Tekent het gevonden stoplicht uitvergroot in de inset
-  function updateZoom(srcCanvas: HTMLCanvasElement, bx: number, by: number, bw: number, bh: number) {
+  // Tekent het gevonden stoplicht uitvergroot in de inset — vanuit video (geen overlay)
+  function updateZoom(bx: number, by: number, bw: number, bh: number) {
     const zc = zoomRef.current;
-    if (!zc) return;
+    const video = videoRef.current;
+    if (!zc || !video) return;
     const zCtx = zc.getContext('2d');
     if (!zCtx) return;
 
     const pad = Math.max(6, bw * 0.15);
     const sx = Math.max(0, bx - pad);
     const sy = Math.max(0, by - pad);
-    const sw = Math.min(srcCanvas.width - sx, bw + pad * 2);
-    const sh = Math.min(srcCanvas.height - sy, bh + pad * 2);
+    const sw = Math.min(video.videoWidth - sx, bw + pad * 2);
+    const sh = Math.min(video.videoHeight - sy, bh + pad * 2);
 
-    zCtx.drawImage(srcCanvas, sx, sy, sw, sh, 0, 0, zc.width, zc.height);
+    zCtx.drawImage(video, sx, sy, sw, sh, 0, 0, zc.width, zc.height);
   }
 
   async function runDetection() {
@@ -176,7 +183,7 @@ export default function Detector() {
         const state = detectLightColor(imageData.data, canvas.width, canvas.height, bx, by, bw, bh);
 
         handleStateChange(state);
-        updateZoom(canvas, bx, by, bw, bh);
+        updateZoom(bx, by, bw, bh);
 
         // Bounding box op overlay canvas
         const color =
