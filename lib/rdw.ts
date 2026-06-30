@@ -41,9 +41,10 @@ export async function opzoekKenteken(raw: string): Promise<KentekenResult> {
   const catalogusprijs = v.catalogusprijs ? parseInt(v.catalogusprijs) : null;
 
   const massaKg = parseInt(v.massa_rijklaar ?? '0') || 0;
-  const maxVermogen = (brandstoffen as any[]).reduce((m: number, f: any) => {
-    const kw = parseFloat(f.nettomaximumvermogen ?? '0');
-    return kw > m ? kw : m;
+  // Tel vermogen op over alle brandstofsoorten (correct voor PHEV/hybride waarbij
+  // verbrandingsmotor + elektromotor gelijktijdig drijfkracht leveren).
+  const maxVermogen = (brandstoffen as any[]).reduce((sum: number, f: any) => {
+    return sum + (parseFloat(f.nettomaximumvermogen ?? '0') || 0);
   }, 0);
 
   return {

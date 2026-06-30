@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.3';
+const VERSION = '1.4.4';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
