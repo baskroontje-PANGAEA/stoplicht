@@ -175,3 +175,21 @@
   color: rgba(255, 255, 255, 0.25);
   margin-top: -12px;
 }
+
+/* Tijdelijke OCR-statusbadge (verdwijnt na scannen) */
+.ocrBadge {
+  position: absolute;
+  bottom: 104px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 215, 0, 0.5);
+  border-radius: 20px;
+  padding: 6px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #FFD700;
+  white-space: nowrap;
+  pointer-events: none;
+}

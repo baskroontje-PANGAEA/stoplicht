@@ -6,10 +6,16 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate } from '@/lib/plateDetect';
 import { opzoekKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+function localDisplayKenteken(clean: string): string {
+  if (clean.length === 6) return `${clean.slice(0,2)}-${clean.slice(2,4)}-${clean.slice(4,6)}`;
+  if (clean.length === 7) return `${clean.slice(0,1)}-${clean.slice(1,4)}-${clean.slice(4,7)}`;
+  return clean;
+}
 
 // Module-level Tesseract worker (hergebruikt over meerdere OCR-runs)
 let _ocrWorker: any = null;
@@ -117,12 +123,14 @@ export default function Detector() {
   // Kenteken-tracking
   const stablePlateRef = useRef<{ x: number; y: number; w: number; h: number; count: number } | null>(null);
   const ocrBusyRef     = useRef(false);
+  const nextOCRAtRef   = useRef(0); // timestamp: wacht na mislukte scan
   const seenPlatesRef  = useRef<Set<string>>(new Set()); // 5-min cache tegen dubbele OCR
 
-  const [status, setStatus]       = useState<AppStatus>('idle');
-  const [light, setLight]         = useState<LightState>('none');
-  const [started, setStarted]     = useState(false);
+  const [status, setStatus]             = useState<AppStatus>('idle');
+  const [light, setLight]               = useState<LightState>('none');
+  const [started, setStarted]           = useState(false);
   const [plateEntries, setPlateEntries] = useState<PlateEntry[]>([]);
+  const [ocrStatus, setOcrStatus]       = useState<string>(''); // zichtbare debug-status
 
   function addPlateEntry(entry: PlateEntry) {
     setPlateEntries((prev) => {
@@ -158,21 +166,52 @@ export default function Detector() {
   async function runOCR(box: { x: number; y: number; w: number; h: number }) {
     const video = videoRef.current;
     if (!video || ocrBusyRef.current) return;
+    if (Date.now() < nextOCRAtRef.current) return; // wacht na mislukte scan
     ocrBusyRef.current = true;
+
+    // Veiligheidsklep: zet ocrBusyRef vrij als het meer dan 30s duurt
+    const busyTimeout = setTimeout(() => { ocrBusyRef.current = false; }, 30_000);
+
+    setOcrStatus('Scannen…');
     try {
       const preprocessed = preprocessPlate(video, box);
       const worker = await getOCRWorker();
       const { data } = await worker.recognize(preprocessed);
       const raw = (data.text as string).replace(/[^A-Z0-9]/g, '');
-      if (raw.length >= 4 && !seenPlatesRef.current.has(raw)) {
+
+      if (raw.length >= 3 && !seenPlatesRef.current.has(raw)) {
         seenPlatesRef.current.add(raw);
         setTimeout(() => seenPlatesRef.current.delete(raw), 300_000);
+
+        setOcrStatus(`Kenteken: ${raw}`);
+
+        // RDW opzoeken; bij mislukken toch het kenteken tonen
         const result = await opzoekKenteken(raw).catch(() => null);
-        if (result) addPlateEntry({ ...result, detectedAt: Date.now() });
+        if (result) {
+          addPlateEntry({ ...result, detectedAt: Date.now() });
+        } else {
+          addPlateEntry({
+            kenteken: raw,
+            display: localDisplayKenteken(raw),
+            merk: '', model: '',
+            bouwjaar: null, catalogusprijs: null, schatting0100: null,
+            detectedAt: Date.now(),
+          });
+        }
+        setOcrStatus('');
+      } else {
+        // OCR-tekst te kort of al gezien → probeer over 3s opnieuw
+        nextOCRAtRef.current = Date.now() + 3_000;
+        setOcrStatus(raw.length < 3 ? 'Onduidelijk, opnieuw…' : '');
+        setTimeout(() => setOcrStatus(''), 2_000);
       }
     } catch (err) {
       console.error('OCR fout:', err);
+      setOcrStatus('OCR fout');
+      nextOCRAtRef.current = Date.now() + 5_000;
+      setTimeout(() => setOcrStatus(''), 4_000);
     } finally {
+      clearTimeout(busyTimeout);
       ocrBusyRef.current = false;
     }
   }
@@ -261,18 +300,18 @@ export default function Detector() {
       for (const p of plates) ctx.strokeRect(p.x, p.y, p.w, p.h);
       ctx.setLineDash([]);
 
-      // Stabiliteitscheck: pas OCR als dezelfde plaat ~8 frames (~2s) stabiel is
+      // Stabiliteitscheck: OCR na 5 stabiele frames (~1.25s)
       if (plates.length > 0) {
         const best = plates[0];
         const prev = stablePlateRef.current;
         const stable = prev &&
-          Math.abs(best.x - prev.x) < 45 &&
-          Math.abs(best.y - prev.y) < 35 &&
-          Math.abs(best.w - prev.w) < 50;
+          Math.abs(best.x - prev.x) < 70 &&
+          Math.abs(best.y - prev.y) < 55 &&
+          Math.abs(best.w - prev.w) < 80;
 
         if (stable) {
           stablePlateRef.current = { ...best, count: prev.count + 1 };
-          if (prev.count >= 8 && !ocrBusyRef.current) {
+          if (prev.count >= 5 && !ocrBusyRef.current) {
             runOCR(best);
           }
         } else {
@@ -378,6 +417,11 @@ export default function Detector() {
             {light === 'green'   && 'Groen'}
           </span>
         </div>
+      )}
+
+      {/* OCR scan-status: tijdelijk zichtbaar boven de kentekenbalk */}
+      {started && status === 'ready' && ocrStatus !== '' && (
+        <div className={styles.ocrBadge}>{ocrStatus}</div>
       )}
 
       {/* Kenteken-balk: onderin, stapelt omhoog */}
