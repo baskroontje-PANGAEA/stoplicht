@@ -3,10 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './Detector.module.css';
 import PlateBar, { type PlateEntry } from './PlateBar';
-import { detectPlates, preprocessPlate } from '@/lib/plateDetect';
+import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.2';
+const VERSION = '1.4.3';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -15,6 +15,31 @@ function localDisplayKenteken(clean: string): string {
   if (clean.length === 6) return `${clean.slice(0,2)}-${clean.slice(2,4)}-${clean.slice(4,6)}`;
   if (clean.length === 7) return `${clean.slice(0,1)}-${clean.slice(1,4)}-${clean.slice(4,7)}`;
   return clean;
+}
+
+// Nederlandse kentekens bevatten nooit I of O — die worden vervangen door 1 en 0.
+// Valideer daarna het patroon (sidecodes 1-10).
+const NL_SIDECODES = [
+  /^[A-Z]{2}\d{4}$/,           // SC1: LL-NN-NN
+  /^\d{2}[A-Z]{2}\d{2}$/,      // SC2: NN-LL-NN
+  /^\d{4}[A-Z]{2}$/,           // SC3: NN-NN-LL
+  /^[A-Z]{2}\d{2}[A-Z]{2}$/,   // SC4: LL-NN-LL
+  /^\d{2}[A-Z]{4}$/,           // SC5: NN-LL-LL
+  /^[A-Z]{4}\d{2}$/,           // SC6: LL-LL-NN
+  /^[A-Z]{2}\d{3}[A-Z]$/,      // SC7: LL-NNN-L  (KV-220-V → KV220V)
+  /^[A-Z]\d{3}[A-Z]{2}$/,      // SC8: L-NNN-LL  (P-936-RT → P936RT)
+  /^\d{2}[A-Z]{3}\d$/,         // SC9: NN-LLL-N
+  /^\d[A-Z]{3}\d{2}$/,         // SC10: N-LLL-NN
+];
+
+function cleanKenteken(raw: string): string | null {
+  const s = raw
+    .toUpperCase()
+    .replace(/I/g, '1')   // I bestaat niet op NL-kentekens
+    .replace(/O/g, '0')   // O bestaat niet op NL-kentekens
+    .replace(/[^A-Z0-9]/g, '');
+  if (s.length < 5 || s.length > 8) return null;
+  return NL_SIDECODES.some((p) => p.test(s)) ? s : null;
 }
 
 // Module-level Tesseract worker (hergebruikt over meerdere OCR-runs)
@@ -121,7 +146,7 @@ export default function Detector() {
   const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Kenteken-tracking
-  const stablePlateRef = useRef<{ x: number; y: number; w: number; h: number; count: number } | null>(null);
+  const stablePlateRef = useRef<(PlateBox & { count: number }) | null>(null);
   const ocrBusyRef     = useRef(false);
   const nextOCRAtRef   = useRef(0); // timestamp: wacht na mislukte scan
   const seenPlatesRef  = useRef<Set<string>>(new Set()); // 5-min cache tegen dubbele OCR
@@ -163,7 +188,7 @@ export default function Detector() {
       0, 0, zc.width, zc.height);
   }
 
-  async function runOCR(box: { x: number; y: number; w: number; h: number }) {
+  async function runOCR(box: PlateBox) {
     const video = videoRef.current;
     if (!video || ocrBusyRef.current) return;
     if (Date.now() < nextOCRAtRef.current) return; // wacht na mislukte scan
@@ -177,9 +202,10 @@ export default function Detector() {
       const preprocessed = preprocessPlate(video, box);
       const worker = await getOCRWorker();
       const { data } = await worker.recognize(preprocessed);
-      const raw = (data.text as string).replace(/[^A-Z0-9]/g, '');
+      const cleaned = cleanKenteken(data.text as string);
 
-      if (raw.length >= 3 && !seenPlatesRef.current.has(raw)) {
+      if (cleaned && !seenPlatesRef.current.has(cleaned)) {
+        const raw = cleaned;
         seenPlatesRef.current.add(raw);
         setTimeout(() => seenPlatesRef.current.delete(raw), 300_000);
 
@@ -200,9 +226,9 @@ export default function Detector() {
         }
         setOcrStatus('');
       } else {
-        // OCR-tekst te kort of al gezien → probeer over 3s opnieuw
+        // Geen geldig sidecode-patroon of al gezien → probeer over 3s opnieuw
         nextOCRAtRef.current = Date.now() + 3_000;
-        setOcrStatus(raw.length < 3 ? 'Onduidelijk, opnieuw…' : '');
+        setOcrStatus(!cleaned ? 'Onduidelijk, opnieuw…' : '');
         setTimeout(() => setOcrStatus(''), 2_000);
       }
     } catch (err) {
@@ -293,11 +319,21 @@ export default function Detector() {
     try {
       const plates = detectPlates(imageData.data, canvas.width, canvas.height);
 
-      // Teken gele kaders om gevonden kentekens
+      // Teken gele kaders om gevonden kentekens (gedraaid als de plaat schuin staat)
       ctx.strokeStyle = '#FFD700';
       ctx.lineWidth   = 3;
       ctx.setLineDash([8, 4]);
-      for (const p of plates) ctx.strokeRect(p.x, p.y, p.w, p.h);
+      for (const p of plates) {
+        if (Math.abs(p.angle) > 0.04) {
+          ctx.save();
+          ctx.translate(p.cx, p.cy);
+          ctx.rotate(p.angle);
+          ctx.strokeRect(-p.pw / 2, -p.ph / 2, p.pw, p.ph);
+          ctx.restore();
+        } else {
+          ctx.strokeRect(p.x, p.y, p.w, p.h);
+        }
+      }
       ctx.setLineDash([]);
 
       // Stabiliteitscheck: OCR na 5 stabiele frames (~1.25s)

@@ -1,88 +1,165 @@
 export interface PlateBox {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  // Scherm-AABB (voor tekenen en croppen)
+  x: number; y: number; w: number; h: number;
+  // PCA-gegevens (voor rotatie-correctie)
+  angle: number;  // principaalashoek in radialen
+  cx: number; cy: number; // centroïde
+  pw: number; ph: number; // breedte/hoogte in eigen frame
 }
 
-// Detecteert Nederlandse gele kentekens via rij-scanning op gele pixels.
-// Stap 3 pixels overslaan voor snelheid; filtert op aspect ratio (~4.7:1).
+// Detecteert Nederlandse gele kentekens via PCA-blob (werkt ook bij schuine platen).
 export function detectPlates(
   data: Uint8ClampedArray,
   imgW: number,
   imgH: number,
 ): PlateBox[] {
-  const step = 3;
-  const rowMin: number[] = [];
-  const rowMax: number[] = [];
+  const STEP = 3;
+  const CELL = 20; // rasterceel voor blob-clustering
 
-  for (let py = 0; py < imgH; py += step) {
-    let minX = -1, maxX = -1;
-    for (let px = 0; px < imgW; px += step) {
+  // 1. Verzamel alle gele pixels
+  const pts: Array<[number, number]> = [];
+  for (let py = 0; py < imgH; py += STEP) {
+    for (let px = 0; px < imgW; px += STEP) {
       const i = (py * imgW + px) * 4;
       const r = data[i], g = data[i + 1], b = data[i + 2];
-      // Kenteken-geel: R en G hoog, B laag
-      if (r > 165 && g > 140 && b < 95 && r > b + 85 && g > b + 55) {
-        if (minX === -1) minX = px;
-        maxX = px;
+      if (r > 158 && g > 128 && b < 105 && r > b + 73 && g > b + 43) {
+        pts.push([px, py]);
       }
     }
-    rowMin.push(minX);
-    rowMax.push(maxX);
+  }
+  if (pts.length < 25) return [];
+
+  // 2. Opzetten rastergrid + BFS blob-finding
+  const gW = Math.ceil(imgW / CELL);
+  const gH = Math.ceil(imgH / CELL);
+  const grid = new Uint8Array(gW * gH);
+  const cellPts = new Map<number, Array<[number, number]>>();
+
+  for (const [x, y] of pts) {
+    const ci = (y / CELL | 0) * gW + (x / CELL | 0);
+    grid[ci] = 1;
+    const arr = cellPts.get(ci);
+    if (arr) arr.push([x, y]);
+    else cellPts.set(ci, [[x, y]]);
   }
 
-  const plates: PlateBox[] = [];
-  let runStart = -1;
+  const visited = new Uint8Array(gW * gH);
+  const blobs: Array<Array<[number, number]>> = [];
 
-  for (let ri = 0; ri <= rowMin.length; ri++) {
-    const hasYellow = ri < rowMin.length && rowMin[ri] !== -1;
-    if (hasYellow) {
-      if (runStart === -1) runStart = ri;
-    } else if (runStart !== -1) {
-      const runEnd = ri - 1;
-      let minX = Infinity, maxX = -Infinity;
-      for (let j = runStart; j <= runEnd; j++) {
-        if (rowMin[j] !== -1) {
-          minX = Math.min(minX, rowMin[j]);
-          maxX = Math.max(maxX, rowMax[j]);
+  for (let ci = 0; ci < grid.length; ci++) {
+    if (!grid[ci] || visited[ci]) continue;
+    const blob: Array<[number, number]> = [];
+    const q = [ci];
+    visited[ci] = 1;
+    while (q.length) {
+      const c = q.pop()!;
+      const arr = cellPts.get(c);
+      if (arr) for (const p of arr) blob.push(p);
+      const bx = c % gW, by = (c / gW) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = bx + dx, ny = by + dy;
+          if (nx >= 0 && nx < gW && ny >= 0 && ny < gH) {
+            const nc = ny * gW + nx;
+            if (grid[nc] && !visited[nc]) { visited[nc] = 1; q.push(nc); }
+          }
         }
       }
-      const rw = maxX - minX;
-      const rh = (runEnd - runStart + 1) * step;
-      const ratio = rw / rh;
-
-      // Standaard NL-kenteken: ratio 4-6.5, minimale pixels
-      if (ratio >= 2.8 && ratio <= 7.5 && rw >= 55 && rh >= 8) {
-        plates.push({
-          x: Math.max(0, minX - step),
-          y: Math.max(0, runStart * step - step),
-          w: rw + step * 2,
-          h: rh + step * 2,
-        });
-      }
-      runStart = -1;
     }
+    if (blob.length >= 20) blobs.push(blob);
   }
 
-  // Geef grootste kandidaten terug (sorteer op oppervlak)
-  return plates.sort((a, b) => b.w * b.h - a.w * a.h).slice(0, 3);
+  // 3. PCA per blob → roterende bounding box
+  const plates: PlateBox[] = [];
+
+  for (const blob of blobs) {
+    // Centroïde
+    let mx = 0, my = 0;
+    for (const [x, y] of blob) { mx += x; my += y; }
+    mx /= blob.length; my /= blob.length;
+
+    // Covariantie-matrix
+    let cxx = 0, cxy = 0, cyy = 0;
+    for (const [x, y] of blob) {
+      const dx = x - mx, dy = y - my;
+      cxx += dx * dx; cxy += dx * dy; cyy += dy * dy;
+    }
+    cxx /= blob.length; cxy /= blob.length; cyy /= blob.length;
+
+    // Principaalhoekas
+    const angle = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+
+    // Omhullende in gedraaid kader
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const [x, y] of blob) {
+      const dx = x - mx, dy = y - my;
+      const u = dx * cos + dy * sin;
+      const v = -dx * sin + dy * cos;
+      if (u < minU) minU = u; if (u > maxU) maxU = u;
+      if (v < minV) minV = v; if (v > maxV) maxV = v;
+    }
+
+    const pw = maxU - minU, ph = maxV - minV;
+    const ratio = pw / Math.max(ph, 1);
+
+    // Aspect-ratio check in eigen frame van de plaat
+    if (ratio < 2.2 || ratio > 9.5 || pw < 40 || ph < 6) continue;
+
+    // Scherm-AABB voor canvas tekenen
+    let x0 = imgW, x1 = 0, y0 = imgH, y1 = 0;
+    for (const [x, y] of blob) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+
+    plates.push({
+      x: Math.max(0, x0 - STEP),
+      y: Math.max(0, y0 - STEP),
+      w: Math.min(imgW - x0, x1 - x0 + STEP * 2),
+      h: Math.min(imgH - y0, y1 - y0 + STEP * 2),
+      angle,
+      cx: mx, cy: my,
+      pw: pw + STEP * 2, ph: ph + STEP * 2,
+    });
+  }
+
+  return plates.sort((a, b) => b.pw * b.ph - a.pw * a.ph).slice(0, 3);
 }
 
-// Schaal en threshold het plate-gebied voor Tesseract-invoer.
-// Geel wordt wit, zwarte letters blijven zwart → donker-op-wit voor Tesseract.
-export function preprocessPlate(
-  video: HTMLVideoElement,
-  box: PlateBox,
-): HTMLCanvasElement {
+// Schaal en deskew het kentekengebied voor Tesseract.
+export function preprocessPlate(video: HTMLVideoElement, box: PlateBox): HTMLCanvasElement {
   const TARGET_H = 80;
-  const scale = TARGET_H / Math.max(box.h, 1);
+  const { cx, cy, pw, ph, angle } = box;
+  const absAngle = Math.abs(angle);
+
+  const scale = TARGET_H / Math.max(ph, 1);
   const out = document.createElement('canvas');
   out.height = TARGET_H;
-  out.width = Math.round(box.w * scale);
+  out.width = Math.round(pw * scale);
 
   const ctx = out.getContext('2d')!;
-  ctx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, out.width, out.height);
 
+  if (absAngle > 0.04) {
+    // Deskew: draai het videoframe zodat de plaat recht staat
+    const pad = Math.ceil(Math.sin(absAngle) * pw * 0.6 + 6);
+    const srcW = pw + pad * 2, srcH = ph + pad * 2;
+    const dstW = srcW * scale, dstH = srcH * scale;
+    ctx.save();
+    ctx.translate(out.width / 2, out.height / 2);
+    ctx.rotate(-angle);
+    ctx.drawImage(
+      video,
+      cx - srcW / 2, cy - srcH / 2, srcW, srcH,
+      -dstW / 2, -dstH / 2, dstW, dstH,
+    );
+    ctx.restore();
+  } else {
+    ctx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, out.width, out.height);
+  }
+
+  // Grijswaarden + drempel: geel → wit, letters → zwart
   const d = ctx.getImageData(0, 0, out.width, out.height);
   for (let i = 0; i < d.data.length; i += 4) {
     const gray = 0.299 * d.data[i] + 0.587 * d.data[i + 1] + 0.114 * d.data[i + 2];
