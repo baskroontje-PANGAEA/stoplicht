@@ -4,18 +4,12 @@ import { useEffect, useRef, useState } from 'react';
 import styles from './Detector.module.css';
 import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
-import { opzoekKenteken } from '@/lib/rdw';
+import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.5';
+const VERSION = '1.4.6';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
-
-function localDisplayKenteken(clean: string): string {
-  if (clean.length === 6) return `${clean.slice(0,2)}-${clean.slice(2,4)}-${clean.slice(4,6)}`;
-  if (clean.length === 7) return `${clean.slice(0,1)}-${clean.slice(1,4)}-${clean.slice(4,7)}`;
-  return clean;
-}
 
 // Nederlandse kentekens bevatten nooit I of O — die worden vervangen door 1 en 0.
 // Valideer daarna het patroon (sidecodes 1-10).
@@ -164,6 +158,12 @@ export default function Detector() {
     });
   }
 
+  function updatePlateEntry(kenteken: string, updates: Partial<PlateEntry>) {
+    setPlateEntries((prev) =>
+      prev.map((e) => (e.kenteken === kenteken ? { ...e, ...updates } : e)),
+    );
+  }
+
   function handleStateChange(newState: LightState) {
     setLight(newState);
     if (newState !== prevLightRef.current && audioRef.current) {
@@ -191,13 +191,12 @@ export default function Detector() {
   async function runOCR(box: PlateBox) {
     const video = videoRef.current;
     if (!video || ocrBusyRef.current) return;
-    if (Date.now() < nextOCRAtRef.current) return; // wacht na mislukte scan
+    if (Date.now() < nextOCRAtRef.current) return;
     ocrBusyRef.current = true;
 
-    // Veiligheidsklep: zet ocrBusyRef vrij als het meer dan 30s duurt
     const busyTimeout = setTimeout(() => { ocrBusyRef.current = false; }, 30_000);
-
     setOcrStatus('Scannen…');
+
     try {
       const preprocessed = preprocessPlate(video, box);
       const worker = await getOCRWorker();
@@ -205,28 +204,35 @@ export default function Detector() {
       const cleaned = cleanKenteken(data.text as string);
 
       if (cleaned && !seenPlatesRef.current.has(cleaned)) {
-        const raw = cleaned;
-        seenPlatesRef.current.add(raw);
-        setTimeout(() => seenPlatesRef.current.delete(raw), 300_000);
+        seenPlatesRef.current.add(cleaned);
+        setTimeout(() => seenPlatesRef.current.delete(cleaned), 300_000);
+        setOcrStatus(`Kenteken: ${cleaned}`);
 
-        setOcrStatus(`Kenteken: ${raw}`);
-
-        // RDW opzoeken; bij mislukken toch het kenteken tonen
-        const result = await opzoekKenteken(raw).catch(() => null);
+        // Fase 1: RDW opzoeken en direct tonen (~400ms)
+        const result = await opzoekKentekenRdw(cleaned).catch(() => null);
         if (result) {
           addPlateEntry({ ...result, detectedAt: Date.now() });
         } else {
           addPlateEntry({
-            kenteken: raw,
-            display: localDisplayKenteken(raw),
+            kenteken: cleaned,
+            display: displayKenteken(cleaned),
             merk: '', model: '',
             bouwjaar: null, catalogusprijs: null, schatting0100: null, accelBron: null,
             detectedAt: Date.now(),
           });
         }
         setOcrStatus('');
+
+        // Fase 2: carquery op de achtergrond (1-4s), update de al getoonde entry
+        if (result?.bouwjaar) {
+          opzoekCarquery(result.merk, result.model, result.bouwjaar)
+            .then((accel) => {
+              if (accel !== null) {
+                updatePlateEntry(cleaned, { schatting0100: accel, accelBron: 'carquery' });
+              }
+            });
+        }
       } else {
-        // Geen geldig sidecode-patroon of al gezien → probeer over 3s opnieuw
         nextOCRAtRef.current = Date.now() + 3_000;
         setOcrStatus(!cleaned ? 'Onduidelijk, opnieuw…' : '');
         setTimeout(() => setOcrStatus(''), 2_000);

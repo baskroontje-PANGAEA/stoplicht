@@ -6,10 +6,10 @@ export interface KentekenResult {
   bouwjaar: number | null;
   catalogusprijs: number | null;
   schatting0100: number | null;
-  accelBron: 'carquery' | 'schatting' | null; // transparantie over databron
+  accelBron: 'carquery' | 'schatting' | null;
 }
 
-function displayKenteken(clean: string): string {
+export function displayKenteken(clean: string): string {
   if (clean.length === 6) return `${clean.slice(0, 2)}-${clean.slice(2, 4)}-${clean.slice(4, 6)}`;
   if (clean.length === 7) return `${clean.slice(0, 1)}-${clean.slice(1, 4)}-${clean.slice(4, 7)}`;
   return clean;
@@ -21,7 +21,8 @@ function schat0100(massaKg: number, vermogenKw: number): number | null {
   return Math.round(1.7 * Math.pow(massaKg / vermogenKw, 0.7) * 10) / 10;
 }
 
-export async function opzoekKenteken(raw: string): Promise<KentekenResult> {
+// Snelle lookup: alleen RDW (~300-500ms). Toon dit direct.
+export async function opzoekKentekenRdw(raw: string): Promise<KentekenResult> {
   const kenteken = raw.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   if (kenteken.length < 4) throw new Error('Ongeldig kenteken');
 
@@ -46,26 +47,7 @@ export async function opzoekKenteken(raw: string): Promise<KentekenResult> {
     return sum + (parseFloat(f.nettomaximumvermogen ?? '0') || 0);
   }, 0);
 
-  // Probeer echte fabrieksspecificatie op te halen via carquery (server-side proxy)
-  let schatting0100: number | null = schat0100(massaKg, maxVermogen);
-  let accelBron: KentekenResult['accelBron'] = schatting0100 !== null ? 'schatting' : null;
-
-  if (bouwjaar && v.merk && v.handelsbenaming) {
-    try {
-      const params = new URLSearchParams({
-        make:  v.merk,
-        model: v.handelsbenaming,
-        year:  String(bouwjaar),
-      });
-      const cq = await fetch(`/api/carspecs?${params}`).then((r) => r.json());
-      if (typeof cq.accel === 'number' && cq.accel > 0) {
-        schatting0100 = cq.accel;
-        accelBron = 'carquery';
-      }
-    } catch {
-      // Formule blijft als fallback
-    }
-  }
+  const s0100 = schat0100(massaKg, maxVermogen);
 
   return {
     kenteken,
@@ -74,7 +56,26 @@ export async function opzoekKenteken(raw: string): Promise<KentekenResult> {
     model: v.handelsbenaming ?? '',
     bouwjaar,
     catalogusprijs,
-    schatting0100,
-    accelBron,
+    schatting0100: s0100,
+    accelBron: s0100 !== null ? 'schatting' : null,
   };
+}
+
+// Achtergrond-update: echte 0-100 via carquery (1-4s, maar blokkeert niets).
+// Roep aan nádat het RDW-resultaat al getoond wordt.
+export async function opzoekCarquery(
+  merk: string,
+  model: string,
+  jaar: number | null,
+): Promise<number | null> {
+  if (!merk || !model || !jaar) return null;
+  try {
+    const params = new URLSearchParams({ make: merk, model, year: String(jaar) });
+    const res = await fetch(`/api/carspecs?${params}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data.accel === 'number' && data.accel > 0 ? data.accel : null;
+  } catch {
+    return null;
+  }
 }

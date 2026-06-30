@@ -22,12 +22,20 @@ export async function GET(req: NextRequest) {
     if (year) url.searchParams.set('year', year);
     url.searchParams.set('full_results', '1');
 
-    const res = await fetch(url.toString(), {
-      headers: { Accept: 'application/json' },
-      next: { revalidate: 604_800 }, // 7 dagen cachen per model+jaar
-    });
+    const controller = new AbortController();
+    const tId = setTimeout(() => controller.abort(), 6_000); // max 6s wachten
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+        next: { revalidate: 604_800 }, // 7 dagen cachen per model+jaar
+      });
+    } finally {
+      clearTimeout(tId);
+    }
 
-    if (!res.ok) return NextResponse.json({ accel: null });
+    if (!res!.ok) return NextResponse.json({ accel: null });
 
     const data = await res.json();
     const trims: any[] = data.Trims ?? [];
