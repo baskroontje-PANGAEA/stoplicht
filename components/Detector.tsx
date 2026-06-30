@@ -2,13 +2,28 @@
 
 import { useEffect, useRef, useState } from 'react';
 import styles from './Detector.module.css';
+import PlateBar, { type PlateEntry } from './PlateBar';
+import { detectPlates, preprocessPlate } from '@/lib/plateDetect';
+import { opzoekKenteken } from '@/lib/rdw';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-// Diepe toon voor rood: stop-signaal (~220 Hz)
+// Module-level Tesseract worker (hergebruikt over meerdere OCR-runs)
+let _ocrWorker: any = null;
+async function getOCRWorker() {
+  if (_ocrWorker) return _ocrWorker;
+  const { createWorker } = await import('tesseract.js');
+  _ocrWorker = await createWorker('eng', 1, { logger: () => {} });
+  await _ocrWorker.setParameters({
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+    tessedit_pageseg_mode: '7', // single text line
+  });
+  return _ocrWorker;
+}
+
 function playDeepBeep(ctx: AudioContext) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -22,7 +37,6 @@ function playDeepBeep(ctx: AudioContext) {
   osc.stop(ctx.currentTime + 0.8);
 }
 
-// Hoge toon voor groen: rij-signaal (~1100 Hz)
 function playHighBeep(ctx: AudioContext) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -50,11 +64,6 @@ function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   return [h, max > 0 ? d / max : 0, max];
 }
 
-// Bepaalt het actieve licht via twee signalen:
-// 1. maxSV: helderste gekleurde pixel per sectie (primair — robuust bij kleine/verre lichten)
-// 2. hueOK: hoe sterk de juiste hue aanwezig is per sectie (bevestiging)
-// Combinatie geeft 50% bonus als positie én hue overeenkomen, zodat groen niet verliest
-// van een sectie met veel zwak gekleurde pixels (behuizing, reflectie).
 function detectLightColor(
   data: Uint8ClampedArray,
   imgW: number, imgH: number,
@@ -68,19 +77,17 @@ function detectLightColor(
   if (actualH < 3) return 'unknown';
   const sectionH = actualH / 3;
 
-  const maxSV = [0, 0, 0]; // max(s×v) per sectie
-  const hueOK = [0, 0, 0]; // som van s×v van pixels met de juiste hue
+  const maxSV = [0, 0, 0];
+  const hueOK = [0, 0, 0];
 
   for (let py = y0; py < y1; py++) {
     const sec = Math.min(2, Math.floor((py - y0) / sectionH));
     for (let px = x0; px < x1; px++) {
       const i = (py * imgW + px) * 4;
       const [h, s, v] = rgbToHsv(data[i], data[i + 1], data[i + 2]);
-      // Laagdrempelig: s > 0.15 vangt ook enigszins verzadigde groene LEDs
       if (v > 0.40 && s > 0.15) {
         const sv = s * v;
         if (sv > maxSV[sec]) maxSV[sec] = sv;
-        // Hue-bevestiging: rood boven (sec 0), geel midden (sec 1), groen onder (sec 2)
         if (sec === 0 && (h <= 25 || h >= 335)) hueOK[0] += sv;
         if (sec === 1 && h > 25 && h < 75)      hueOK[1] += sv;
         if (sec === 2 && h >= 70 && h <= 175)   hueOK[2] += sv;
@@ -90,60 +97,90 @@ function detectLightColor(
 
   const maxVal = Math.max(...maxSV);
   if (maxVal < 0.18) return 'unknown';
-
-  // Gecombineerde score: 50% bonus als hue overeenkomt met sectie-positie
   const score = maxSV.map((m, i) => m * (hueOK[i] > 0 ? 1.5 : 1.0));
   return (['red', 'yellow', 'green'] as LightState[])[score.indexOf(Math.max(...score))];
 }
 
 export default function Detector() {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const zoomRef = useRef<HTMLCanvasElement>(null);
-  const modelRef = useRef<any>(null);
-  const audioRef = useRef<AudioContext | null>(null);
-  const prevLightRef = useRef<LightState>('none');
-  const noneCountRef = useRef(0);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const runningRef = useRef(false);
-  const frameRef = useRef(0);
+  const videoRef    = useRef<HTMLVideoElement>(null);
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const zoomRef     = useRef<HTMLCanvasElement>(null);
+  const modelRef    = useRef<any>(null);
+  const audioRef    = useRef<AudioContext | null>(null);
+  const prevLightRef  = useRef<LightState>('none');
+  const noneCountRef  = useRef(0);
+  const timerRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runningRef    = useRef(false);
+  const frameRef      = useRef(0);
   const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const [status, setStatus] = useState<AppStatus>('idle');
-  const [light, setLight] = useState<LightState>('none');
-  const [started, setStarted] = useState(false);
+  // Kenteken-tracking
+  const stablePlateRef = useRef<{ x: number; y: number; w: number; h: number; count: number } | null>(null);
+  const ocrBusyRef     = useRef(false);
+  const seenPlatesRef  = useRef<Set<string>>(new Set()); // 5-min cache tegen dubbele OCR
 
-  // Piept alleen bij overgang naar een nieuwe staat
+  const [status, setStatus]       = useState<AppStatus>('idle');
+  const [light, setLight]         = useState<LightState>('none');
+  const [started, setStarted]     = useState(false);
+  const [plateEntries, setPlateEntries] = useState<PlateEntry[]>([]);
+
+  function addPlateEntry(entry: PlateEntry) {
+    setPlateEntries((prev) => {
+      if (prev.some((p) => p.kenteken === entry.kenteken)) return prev;
+      return [entry, ...prev].slice(0, 8);
+    });
+  }
+
   function handleStateChange(newState: LightState) {
     setLight(newState);
     if (newState !== prevLightRef.current && audioRef.current) {
-      if (newState === 'red') playDeepBeep(audioRef.current);
-      else if (newState === 'green') playHighBeep(audioRef.current);
+      if (newState === 'red')   playDeepBeep(audioRef.current);
+      if (newState === 'green') playHighBeep(audioRef.current);
     }
     prevLightRef.current = newState;
   }
 
-  // Tekent het gevonden stoplicht uitvergroot in de inset — vanuit video (geen overlay)
   function updateZoom(bx: number, by: number, bw: number, bh: number) {
     const zc = zoomRef.current;
     const video = videoRef.current;
     if (!zc || !video) return;
     const zCtx = zc.getContext('2d');
     if (!zCtx) return;
-
     const pad = Math.max(6, bw * 0.15);
     const sx = Math.max(0, bx - pad);
     const sy = Math.max(0, by - pad);
-    const sw = Math.min(video.videoWidth - sx, bw + pad * 2);
-    const sh = Math.min(video.videoHeight - sy, bh + pad * 2);
+    zCtx.drawImage(video, sx, sy,
+      Math.min(video.videoWidth - sx, bw + pad * 2),
+      Math.min(video.videoHeight - sy, bh + pad * 2),
+      0, 0, zc.width, zc.height);
+  }
 
-    zCtx.drawImage(video, sx, sy, sw, sh, 0, 0, zc.width, zc.height);
+  async function runOCR(box: { x: number; y: number; w: number; h: number }) {
+    const video = videoRef.current;
+    if (!video || ocrBusyRef.current) return;
+    ocrBusyRef.current = true;
+    try {
+      const preprocessed = preprocessPlate(video, box);
+      const worker = await getOCRWorker();
+      const { data } = await worker.recognize(preprocessed);
+      const raw = (data.text as string).replace(/[^A-Z0-9]/g, '');
+      if (raw.length >= 4 && !seenPlatesRef.current.has(raw)) {
+        seenPlatesRef.current.add(raw);
+        setTimeout(() => seenPlatesRef.current.delete(raw), 300_000);
+        const result = await opzoekKenteken(raw).catch(() => null);
+        if (result) addPlateEntry({ ...result, detectedAt: Date.now() });
+      }
+    } catch (err) {
+      console.error('OCR fout:', err);
+    } finally {
+      ocrBusyRef.current = false;
+    }
   }
 
   async function runDetection() {
     if (!runningRef.current) return;
 
-    const video = videoRef.current;
+    const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !modelRef.current || video.readyState < 2) {
       timerRef.current = setTimeout(runDetection, 300);
@@ -153,17 +190,19 @@ export default function Detector() {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
-    canvas.width = video.videoWidth;
+    canvas.width  = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
 
-    // Afwisselend: even frames = volledig beeld (1×), oneven frames = 2× center-crop
-    // De 2× crop maakt verre stoplichten 2× groter in het model-invoer (~7→14px)
+    // Lees pixels eenmalig per frame (gebruikt door zowel licht- als kentekendetectie)
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+    // ── Stoplicht: afwisselend 1× volledig / 2× center-crop ──────────────────
     const useZoom = frameRef.current % 2 === 1;
     frameRef.current++;
 
     let detectCanvas: HTMLCanvasElement = canvas;
-    let mapToOrig = (b: number[]) => b; // identity voor volledige beeld
+    let mapToOrig = (b: number[]) => b;
 
     if (useZoom) {
       if (!tempCanvasRef.current) tempCanvasRef.current = document.createElement('canvas');
@@ -172,60 +211,77 @@ export default function Detector() {
       tc.height = canvas.height;
       const tCtx = tc.getContext('2d');
       if (tCtx) {
-        // Neem het centrale 50%×50% gebied en stretch naar volledige canvas
         const cx = Math.floor(canvas.width  * 0.25);
         const cy = Math.floor(canvas.height * 0.25);
         const cw = Math.floor(canvas.width  * 0.50);
         const ch = Math.floor(canvas.height * 0.50);
         tCtx.drawImage(canvas, cx, cy, cw, ch, 0, 0, tc.width, tc.height);
         detectCanvas = tc;
-        // Zet COCO-SSD coördinaten terug naar origineel frame
-        const sx = cw / tc.width;   // 0.5
-        const sy = ch / tc.height;  // 0.5
+        const sx = cw / tc.width, sy = ch / tc.height;
         mapToOrig = ([bx, by, bw, bh]) => [cx + bx * sx, cy + by * sy, bw * sx, bh * sy];
       }
     }
 
     try {
       const predictions: any[] = await modelRef.current.detect(detectCanvas);
-      const trafficLights = predictions.filter(
-        (p) => p.class === 'traffic light' && p.score > 0.35,
-      );
+      const lights = predictions.filter((p) => p.class === 'traffic light' && p.score > 0.35);
 
-      if (trafficLights.length === 0) {
+      if (lights.length === 0) {
         noneCountRef.current++;
         if (noneCountRef.current >= 4) {
           handleStateChange('none');
           const zc = zoomRef.current;
-          if (zc) {
-            const zCtx = zc.getContext('2d');
-            zCtx?.clearRect(0, 0, zc.width, zc.height);
-          }
+          zc?.getContext('2d')?.clearRect(0, 0, zc.width, zc.height);
         }
       } else {
         noneCountRef.current = 0;
-
-        const best: any = trafficLights.reduce((a: any, b: any) => (a.score > b.score ? a : b));
+        const best: any = lights.reduce((a: any, b: any) => (a.score > b.score ? a : b));
         const [bx, by, bw, bh] = mapToOrig(best.bbox as number[]);
-
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const state = detectLightColor(imageData.data, canvas.width, canvas.height, bx, by, bw, bh);
-
         handleStateChange(state);
         updateZoom(bx, by, bw, bh);
 
-        const color =
-          state === 'green' ? '#00ee44'
-          : state === 'red' ? '#ff3333'
-          : state === 'yellow' ? '#ffcc00'
-          : 'rgba(255,255,255,0.6)';
-        ctx.strokeStyle = color;
+        const lColor = state === 'green' ? '#00ee44' : state === 'red' ? '#ff3333'
+          : state === 'yellow' ? '#ffcc00' : 'rgba(255,255,255,0.6)';
+        ctx.strokeStyle = lColor;
         ctx.lineWidth = Math.max(2, Math.min(6, Math.max(bw, 4) / 15));
+        ctx.setLineDash([]);
         ctx.strokeRect(bx, by, bw, bh);
       }
-    } catch (_) {
-      // stille fout, volgende frame
-    }
+    } catch (_) {}
+
+    // ── Kenteken: gele rechthoeken detecteren elk frame ──────────────────────
+    try {
+      const plates = detectPlates(imageData.data, canvas.width, canvas.height);
+
+      // Teken gele kaders om gevonden kentekens
+      ctx.strokeStyle = '#FFD700';
+      ctx.lineWidth   = 3;
+      ctx.setLineDash([8, 4]);
+      for (const p of plates) ctx.strokeRect(p.x, p.y, p.w, p.h);
+      ctx.setLineDash([]);
+
+      // Stabiliteitscheck: pas OCR als dezelfde plaat ~8 frames (~2s) stabiel is
+      if (plates.length > 0) {
+        const best = plates[0];
+        const prev = stablePlateRef.current;
+        const stable = prev &&
+          Math.abs(best.x - prev.x) < 45 &&
+          Math.abs(best.y - prev.y) < 35 &&
+          Math.abs(best.w - prev.w) < 50;
+
+        if (stable) {
+          stablePlateRef.current = { ...best, count: prev.count + 1 };
+          if (prev.count >= 8 && !ocrBusyRef.current) {
+            runOCR(best);
+          }
+        } else {
+          stablePlateRef.current = { ...best, count: 1 };
+        }
+      } else {
+        stablePlateRef.current = null;
+      }
+    } catch (_) {}
 
     timerRef.current = setTimeout(runDetection, 250);
   }
@@ -235,7 +291,6 @@ export default function Detector() {
     setStatus('loading');
     try {
       audioRef.current = new AudioContext();
-
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
       });
@@ -243,12 +298,10 @@ export default function Detector() {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-
       const tf = await import('@tensorflow/tfjs');
       await tf.ready();
       const cocoSsd = await import('@tensorflow-models/coco-ssd');
       modelRef.current = await cocoSsd.load();
-
       setStatus('ready');
       runningRef.current = true;
       runDetection();
@@ -264,29 +317,26 @@ export default function Detector() {
       if (timerRef.current) clearTimeout(timerRef.current);
       audioRef.current?.close();
       const video = videoRef.current;
-      if (video?.srcObject) {
-        (video.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-      }
+      if (video?.srcObject) (video.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
     };
   }, []);
 
-  const badgeClass =
-    status === 'loading' ? styles.badgeLoading
-    : status === 'ready' ? styles.badgeReady
-    : styles.badgeError;
+  const badgeClass = status === 'loading' ? styles.badgeLoading
+    : status === 'ready' ? styles.badgeReady : styles.badgeError;
 
-  const stateColor =
-    light === 'red' ? '#ff3333'
-    : light === 'yellow' ? '#ffcc00'
-    : light === 'green' ? '#00ee44'
-    : 'rgba(255,255,255,0.4)';
+  const stateColor = light === 'red' ? '#ff3333' : light === 'yellow' ? '#ffcc00'
+    : light === 'green' ? '#00ee44' : 'rgba(255,255,255,0.4)';
+
+  const activePlates = plateEntries.filter((e) => Date.now() - e.detectedAt < 60_000);
+  const indicatorBottom = activePlates.length > 0
+    ? activePlates.length * 48 + 20
+    : 44;
 
   return (
     <div className={styles.root}>
       <video ref={videoRef} className={styles.video} playsInline muted />
       <canvas ref={canvasRef} className={styles.canvas} />
 
-      {/* Gekleurde rand als visueel signaal */}
       {(light === 'red' || light === 'green') && (
         <div
           className={light === 'green' ? styles.borderFlash : styles.borderStatic}
@@ -294,7 +344,6 @@ export default function Detector() {
         />
       )}
 
-      {/* Header: versienummer links, status rechts */}
       <div className={styles.header}>
         <span className={styles.version}>v{VERSION}</span>
         {started && (
@@ -306,51 +355,43 @@ export default function Detector() {
         )}
       </div>
 
-      {/* Zoom inset: toont het gevonden stoplicht uitvergroot */}
       {started && status === 'ready' && light !== 'none' && (
-        <canvas
-          ref={zoomRef}
-          width={80}
-          height={160}
-          className={styles.zoomInset}
-          style={{ borderColor: stateColor }}
-        />
+        <canvas ref={zoomRef} width={80} height={160}
+          className={styles.zoomInset} style={{ borderColor: stateColor }} />
       )}
       {started && status === 'ready' && light === 'none' && (
         <canvas ref={zoomRef} style={{ display: 'none' }} />
       )}
 
-      {/* Staat indicator onderin */}
       {started && status === 'ready' && (
-        <div className={styles.indicator} style={{ borderColor: `${stateColor}66` }}>
-          <div
-            className={styles.dot}
-            style={{
-              background: stateColor,
-              boxShadow: light !== 'none' && light !== 'unknown'
-                ? `0 0 10px ${stateColor}` : 'none',
-            }}
-          />
+        <div className={styles.indicator}
+          style={{ borderColor: `${stateColor}66`, bottom: indicatorBottom }}>
+          <div className={styles.dot} style={{
+            background: stateColor,
+            boxShadow: light !== 'none' && light !== 'unknown' ? `0 0 10px ${stateColor}` : 'none',
+          }} />
           <span className={styles.stateText} style={{ color: stateColor }}>
-            {light === 'none' && <span style={{ color: 'rgba(255,255,255,0.5)' }}>Zoeken…</span>}
+            {light === 'none'    && <span style={{ color: 'rgba(255,255,255,0.5)' }}>Zoeken…</span>}
             {light === 'unknown' && <span style={{ color: 'rgba(255,255,255,0.6)' }}>Stoplicht gevonden</span>}
-            {light === 'red' && 'Rood'}
-            {light === 'yellow' && 'Oranje'}
-            {light === 'green' && 'Groen'}
+            {light === 'red'     && 'Rood'}
+            {light === 'yellow'  && 'Oranje'}
+            {light === 'green'   && 'Groen'}
           </span>
         </div>
       )}
 
-      {/* Startscherm */}
+      {/* Kenteken-balk: onderin, stapelt omhoog */}
+      {started && status === 'ready' && (
+        <PlateBar entries={plateEntries} />
+      )}
+
       {!started && (
         <div className={styles.splash}>
           <h1 className={styles.splashTitle}>Stoplicht</h1>
           <p className={styles.splashSub}>
-            Richt de camera op een stoplicht. Diepe toon bij rood, hoge piep bij groen.
+            Detecteert stoplichten én kentekens. Diepe toon bij rood, hoge piep bij groen.
           </p>
-          <button className={styles.startButton} onClick={start}>
-            Start
-          </button>
+          <button className={styles.startButton} onClick={start}>Start</button>
           <span className={styles.splashVersion}>v{VERSION}</span>
         </div>
       )}
