@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './Detector.module.css';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -106,6 +106,8 @@ export default function Detector() {
   const noneCountRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
+  const frameRef = useRef(0);
+  const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [status, setStatus] = useState<AppStatus>('idle');
   const [light, setLight] = useState<LightState>('none');
@@ -155,14 +157,42 @@ export default function Detector() {
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
 
+    // Afwisselend: even frames = volledig beeld (1×), oneven frames = 2× center-crop
+    // De 2× crop maakt verre stoplichten 2× groter in het model-invoer (~7→14px)
+    const useZoom = frameRef.current % 2 === 1;
+    frameRef.current++;
+
+    let detectCanvas: HTMLCanvasElement = canvas;
+    let mapToOrig = (b: number[]) => b; // identity voor volledige beeld
+
+    if (useZoom) {
+      if (!tempCanvasRef.current) tempCanvasRef.current = document.createElement('canvas');
+      const tc = tempCanvasRef.current;
+      tc.width  = canvas.width;
+      tc.height = canvas.height;
+      const tCtx = tc.getContext('2d');
+      if (tCtx) {
+        // Neem het centrale 50%×50% gebied en stretch naar volledige canvas
+        const cx = Math.floor(canvas.width  * 0.25);
+        const cy = Math.floor(canvas.height * 0.25);
+        const cw = Math.floor(canvas.width  * 0.50);
+        const ch = Math.floor(canvas.height * 0.50);
+        tCtx.drawImage(canvas, cx, cy, cw, ch, 0, 0, tc.width, tc.height);
+        detectCanvas = tc;
+        // Zet COCO-SSD coördinaten terug naar origineel frame
+        const sx = cw / tc.width;   // 0.5
+        const sy = ch / tc.height;  // 0.5
+        mapToOrig = ([bx, by, bw, bh]) => [cx + bx * sx, cy + by * sy, bw * sx, bh * sy];
+      }
+    }
+
     try {
-      const predictions: any[] = await modelRef.current.detect(canvas);
+      const predictions: any[] = await modelRef.current.detect(detectCanvas);
       const trafficLights = predictions.filter(
         (p) => p.class === 'traffic light' && p.score > 0.35,
       );
 
       if (trafficLights.length === 0) {
-        // Wacht een paar frames voor we "geen stoplicht" melden — vermijdt flikkering
         noneCountRef.current++;
         if (noneCountRef.current >= 4) {
           handleStateChange('none');
@@ -175,9 +205,8 @@ export default function Detector() {
       } else {
         noneCountRef.current = 0;
 
-        // Kies het meest zekere stoplicht
         const best: any = trafficLights.reduce((a: any, b: any) => (a.score > b.score ? a : b));
-        const [bx, by, bw, bh] = best.bbox as number[];
+        const [bx, by, bw, bh] = mapToOrig(best.bbox as number[]);
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const state = detectLightColor(imageData.data, canvas.width, canvas.height, bx, by, bw, bh);
@@ -185,14 +214,13 @@ export default function Detector() {
         handleStateChange(state);
         updateZoom(bx, by, bw, bh);
 
-        // Bounding box op overlay canvas
         const color =
           state === 'green' ? '#00ee44'
           : state === 'red' ? '#ff3333'
           : state === 'yellow' ? '#ffcc00'
           : 'rgba(255,255,255,0.6)';
         ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(2, Math.min(6, bw / 15));
+        ctx.lineWidth = Math.max(2, Math.min(6, Math.max(bw, 4) / 15));
         ctx.strokeRect(bx, by, bw, bh);
       }
     } catch (_) {
