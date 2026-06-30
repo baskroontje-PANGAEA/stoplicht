@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 // Server-side proxy naar carqueryapi.com — vermijdt CORS en mixed-content.
-// Geeft de 0-100 km/h tijd terug (omgerekend van 0-60 mph) voor het beste
-// matchende trim, of { accel: null } als er geen data is.
+// Zoekt ZONDER jaar-filter zodat varianten als Taycan GTS/Turbo/4S altijd gevonden worden;
+// scoort trims op naamovereenkomst (dominant) + jaarnabijheid (tiebreaker).
 export async function GET(req: NextRequest) {
   const sp = new URL(req.url).searchParams;
   const make  = (sp.get('make')  ?? '').toLowerCase().trim();
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
 
   if (!make || !model) return NextResponse.json({ accel: null });
 
-  // Eerste woord van de handelsbenaming = basismodel (XC90, Golf, Taycan, ...)
+  // Eerste woord van de handelsbenaming = basismodel (XC90, Golf, Taycan, …)
   const baseModel = model.split(/\s+/)[0].toLowerCase();
 
   try {
@@ -19,17 +19,17 @@ export async function GET(req: NextRequest) {
     url.searchParams.set('cmd', 'getTrims');
     url.searchParams.set('make', make);
     url.searchParams.set('model', baseModel);
-    if (year) url.searchParams.set('year', year);
+    // Geen jaar-filter: haal alle jaren op zodat varianten altijd gevonden worden.
     url.searchParams.set('full_results', '1');
 
     const controller = new AbortController();
-    const tId = setTimeout(() => controller.abort(), 6_000); // max 6s wachten
+    const tId = setTimeout(() => controller.abort(), 6_000);
     let res: Response;
     try {
       res = await fetch(url.toString(), {
         signal: controller.signal,
         headers: { Accept: 'application/json' },
-        next: { revalidate: 604_800 }, // 7 dagen cachen per model+jaar
+        next: { revalidate: 604_800 }, // 7 dagen cachen per model
       });
     } finally {
       clearTimeout(tId);
@@ -44,13 +44,24 @@ export async function GET(req: NextRequest) {
     const withAccel = trims.filter((t) => parseFloat(t.model_0_to_60 ?? '') > 0);
     if (!withAccel.length) return NextResponse.json({ accel: null });
 
-    // Beste match: trim wiens naam de meeste woorden deelt met de handelsbenaming
+    // Beste match: naamovereenkomst (dominant) + jaarnabijheid (tiebreaker)
     const ref = model.toUpperCase();
+    const targetYear = year ? parseInt(year) : 0;
     let best = withAccel[0];
     let bestScore = -1;
+
     for (const t of withAccel) {
+      // Naamovereenkomst: hoeveel woorden uit de trimnaam staan in de handelsbenaming?
       const words = (t.model_trim ?? '').toUpperCase().split(/\s+/);
-      const score = words.filter((w: string) => w.length > 1 && ref.includes(w)).length;
+      const nameScore = words.filter((w: string) => w.length > 1 && ref.includes(w)).length;
+
+      // Jaarnabijheid: exact jaar = 1, elk jaar erbij → dichter bij 0
+      const trimYear = parseInt(t.model_year ?? '0') || 0;
+      const yearDiff = targetYear && trimYear ? Math.abs(targetYear - trimYear) : 5;
+      const yearScore = 1 / (yearDiff + 1);
+
+      // Naam weegt 3× zwaarder dan jaar (variant GTS vs Turbo > bouwjaar 2021 vs 2022)
+      const score = nameScore * 3 + yearScore;
       if (score > bestScore) { bestScore = score; best = t; }
     }
 

@@ -5,20 +5,16 @@ export interface KentekenResult {
   model: string;
   bouwjaar: number | null;
   catalogusprijs: number | null;
-  schatting0100: number | null;
-  accelBron: 'carquery' | 'schatting' | null;
+  vermogenKw: number | null;   // totaal systeemvermogen (kW), uit RDW
+  vermogenPk: number | null;   // kW × 1.36 (metrisch pk)
+  accel0100: number | null;    // 0-100 km/h uit carquery — alleen echte fabrieksdata
+  accelBron: 'carquery' | null;
 }
 
 export function displayKenteken(clean: string): string {
   if (clean.length === 6) return `${clean.slice(0, 2)}-${clean.slice(2, 4)}-${clean.slice(4, 6)}`;
   if (clean.length === 7) return `${clean.slice(0, 1)}-${clean.slice(1, 4)}-${clean.slice(4, 7)}`;
   return clean;
-}
-
-// Empirische fallback: t ≈ 1.7 × (massa/vermogen)^0.7
-function schat0100(massaKg: number, vermogenKw: number): number | null {
-  if (!massaKg || !vermogenKw) return null;
-  return Math.round(1.7 * Math.pow(massaKg / vermogenKw, 0.7) * 10) / 10;
 }
 
 // Snelle lookup: alleen RDW (~300-500ms). Toon dit direct.
@@ -41,18 +37,24 @@ export async function opzoekKentekenRdw(raw: string): Promise<KentekenResult> {
   const bouwjaar = dateStr.length >= 4 ? parseInt(dateStr.slice(0, 4)) : null;
   const catalogusprijs = v.catalogusprijs ? parseInt(v.catalogusprijs) : null;
 
-  const massaKg = parseInt(v.massa_rijklaar ?? '0') || 0;
-  // Tel vermogen op over alle brandstofsoorten.
-  // Benzine/diesel:  f.nettomaximumvermogen
-  // Elektrisch:      f.netto_max_vermogen_elektrisch  (ander veld bij EV/PHEV)
-  // Per entry nemen we het maximum van beide velden, dan sommeren we.
-  const maxVermogen = (brandstoffen as any[]).reduce((sum: number, f: any) => {
-    const ice = parseFloat(f.nettomaximumvermogen          ?? '0') || 0;
-    const ev  = parseFloat(f.netto_max_vermogen_elektrisch ?? '0') || 0;
-    return sum + Math.max(ice, ev);
-  }, 0);
-
-  const s0100 = schat0100(massaKg, maxVermogen);
+  // Vermogen per brandstofsoort uit RDW:
+  //   Benzine / diesel / LPG / waterstof → nettomaximumvermogen
+  //   Elektrisch (EV / PHEV e-motor)     → netto_max_vermogen_elektrisch
+  //                                         (fallback: nominaal_continu_maximumvermogen)
+  // Bij PHEV: sommeer ICE-vermogen + elektrisch motorvermogen.
+  let totalKw = 0;
+  for (const f of brandstoffen as any[]) {
+    const type = String(f.brandstof_omschrijving ?? '').toLowerCase();
+    if (type.includes('elektrisch')) {
+      const peak = parseFloat(f.netto_max_vermogen_elektrisch      ?? '0') || 0;
+      const cont = parseFloat(f.nominaal_continu_maximumvermogen   ?? '0') || 0;
+      totalKw += peak || cont;
+    } else {
+      totalKw += parseFloat(f.nettomaximumvermogen ?? '0') || 0;
+    }
+  }
+  const vermogenKw = totalKw > 0 ? Math.round(totalKw) : null;
+  const vermogenPk = vermogenKw ? Math.round(vermogenKw * 1.36) : null;
 
   return {
     kenteken,
@@ -61,21 +63,24 @@ export async function opzoekKentekenRdw(raw: string): Promise<KentekenResult> {
     model: v.handelsbenaming ?? '',
     bouwjaar,
     catalogusprijs,
-    schatting0100: s0100,
-    accelBron: s0100 !== null ? 'schatting' : null,
+    vermogenKw,
+    vermogenPk,
+    accel0100: null,
+    accelBron: null,
   };
 }
 
-// Achtergrond-update: echte 0-100 via carquery (1-4s, maar blokkeert niets).
+// Achtergrond-update: echte 0-100 via carquery (1-4s, blokkeert niets).
 // Roep aan nádat het RDW-resultaat al getoond wordt.
 export async function opzoekCarquery(
   merk: string,
   model: string,
   jaar: number | null,
 ): Promise<number | null> {
-  if (!merk || !model || !jaar) return null;
+  if (!merk || !model) return null;
   try {
-    const params = new URLSearchParams({ make: merk, model, year: String(jaar) });
+    const params = new URLSearchParams({ make: merk, model });
+    if (jaar) params.set('year', String(jaar));
     const res = await fetch(`/api/carspecs?${params}`);
     if (!res.ok) return null;
     const data = await res.json();

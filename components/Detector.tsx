@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.7';
+const VERSION = '1.5.0';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -217,18 +217,20 @@ export default function Detector() {
             kenteken: cleaned,
             display: displayKenteken(cleaned),
             merk: '', model: '',
-            bouwjaar: null, catalogusprijs: null, schatting0100: null, accelBron: null,
+            bouwjaar: null, catalogusprijs: null,
+            vermogenKw: null, vermogenPk: null,
+            accel0100: null, accelBron: null,
             detectedAt: Date.now(),
           });
         }
         setOcrStatus('');
 
         // Fase 2: carquery op de achtergrond (1-4s), update de al getoonde entry
-        if (result?.bouwjaar) {
+        if (result?.merk) {
           opzoekCarquery(result.merk, result.model, result.bouwjaar)
             .then((accel) => {
               if (accel !== null) {
-                updatePlateEntry(cleaned, { schatting0100: accel, accelBron: 'carquery' });
+                updatePlateEntry(cleaned, { accel0100: accel, accelBron: 'carquery' });
               }
             });
         }

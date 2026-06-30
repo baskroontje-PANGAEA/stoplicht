@@ -30,14 +30,18 @@ export default function PlateBar({ entries }: Props) {
       {visible.map((e) => {
         const merkModel = [e.merk, e.model].filter(Boolean).join(' ') || null;
 
-        // Toon databron expliciet: "(CQ)" = carquery fabrieksspec, "(~)" = schatting
-        const accelLabel = e.schatting0100
-          ? `0–100: ${e.schatting0100}s ${e.accelBron === 'carquery' ? '(CQ)' : '(~)'}`
+        const vermogenLabel = e.vermogenKw
+          ? `${e.vermogenKw} kW / ${e.vermogenPk} pk`
+          : null;
+
+        const accelLabel = e.accel0100
+          ? `0–100: ${e.accel0100}s`
           : null;
 
         const stats = [
           e.bouwjaar ?? null,
           e.catalogusprijs ? `€ ${e.catalogusprijs.toLocaleString('nl-NL')}` : null,
+          vermogenLabel,
           accelLabel,
         ].filter(Boolean).join('  ·  ');
 
