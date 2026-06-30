@@ -42,9 +42,14 @@ export async function opzoekKentekenRdw(raw: string): Promise<KentekenResult> {
   const catalogusprijs = v.catalogusprijs ? parseInt(v.catalogusprijs) : null;
 
   const massaKg = parseInt(v.massa_rijklaar ?? '0') || 0;
-  // Tel vermogen op over alle brandstofsoorten (correct voor PHEV/hybride)
+  // Tel vermogen op over alle brandstofsoorten.
+  // Benzine/diesel:  f.nettomaximumvermogen
+  // Elektrisch:      f.netto_max_vermogen_elektrisch  (ander veld bij EV/PHEV)
+  // Per entry nemen we het maximum van beide velden, dan sommeren we.
   const maxVermogen = (brandstoffen as any[]).reduce((sum: number, f: any) => {
-    return sum + (parseFloat(f.nettomaximumvermogen ?? '0') || 0);
+    const ice = parseFloat(f.nettomaximumvermogen          ?? '0') || 0;
+    const ev  = parseFloat(f.netto_max_vermogen_elektrisch ?? '0') || 0;
+    return sum + Math.max(ice, ev);
   }, 0);
 
   const s0100 = schat0100(massaKg, maxVermogen);

@@ -30,9 +30,9 @@ export default function PlateBar({ entries }: Props) {
       {visible.map((e) => {
         const merkModel = [e.merk, e.model].filter(Boolean).join(' ') || null;
 
-        // Toon ~ bij schatting, geen ~ bij echte fabrieksspec
+        // Toon databron expliciet: "(CQ)" = carquery fabrieksspec, "(~)" = schatting
         const accelLabel = e.schatting0100
-          ? `0–100: ${e.accelBron === 'carquery' ? '' : '~'}${e.schatting0100}s`
+          ? `0–100: ${e.schatting0100}s ${e.accelBron === 'carquery' ? '(CQ)' : '(~)'}`
           : null;
 
         const stats = [
