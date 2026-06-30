@@ -1,0 +1,163 @@
+.root {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  overflow: hidden;
+}
+
+.video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Canvas overlay toont bounding boxes */
+.canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Groene rand pulsering als het licht groen is */
+.greenFlash {
+  position: absolute;
+  inset: 0;
+  border: 8px solid #00ee44;
+  box-shadow: inset 0 0 60px rgba(0, 238, 68, 0.3);
+  pointer-events: none;
+  animation: pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.badgeLoading {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffcc00;
+}
+
+.badgeReady {
+  font-size: 13px;
+  font-weight: 600;
+  color: #00ee44;
+}
+
+.badgeError {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ff4444;
+}
+
+/* Indicator onderin met de huidige staat */
+.indicator {
+  position: absolute;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  border-radius: 28px;
+  padding: 12px 22px;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+
+.dotRed {
+  background: #ff3333;
+  box-shadow: 0 0 10px #ff3333;
+}
+
+.dotYellow {
+  background: #ffcc00;
+  box-shadow: 0 0 10px #ffcc00;
+}
+
+.dotGreen {
+  background: #00ee44;
+  box-shadow: 0 0 10px #00ee44;
+}
+
+.dotUnknown {
+  background: #888;
+}
+
+/* Startscherm */
+.splash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: rgba(0, 0, 0, 0.9);
+  padding: 48px 40px;
+  text-align: center;
+}
+
+.splashTitle {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+
+.splashSub {
+  font-size: 16px;
+  color: rgba(255, 255, 255, 0.65);
+  max-width: 280px;
+  line-height: 1.6;
+}
+
+.startButton {
+  background: #00ee44;
+  color: #000;
+  border: none;
+  border-radius: 50px;
+  padding: 18px 56px;
+  font-size: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-top: 8px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.startButton:active {
+  opacity: 0.8;
+  transform: scale(0.97);
+}
