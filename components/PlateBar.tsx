@@ -29,10 +29,16 @@ export default function PlateBar({ entries }: Props) {
     <div className={styles.bar}>
       {visible.map((e) => {
         const merkModel = [e.merk, e.model].filter(Boolean).join(' ') || null;
+
+        // Toon ~ bij schatting, geen ~ bij echte fabrieksspec
+        const accelLabel = e.schatting0100
+          ? `0–100: ${e.accelBron === 'carquery' ? '' : '~'}${e.schatting0100}s`
+          : null;
+
         const stats = [
           e.bouwjaar ?? null,
-          e.catalogusprijs ? `€ ${e.catalogusprijs.toLocaleString('nl-NL')}` : null,
-          e.schatting0100 ? `0–100: ~${e.schatting0100}s` : null,
+          e.catalogusprijs ? `€ ${e.catalogusprijs.toLocaleString('nl-NL')}` : null,
+          accelLabel,
         ].filter(Boolean).join('  ·  ');
 
         return (

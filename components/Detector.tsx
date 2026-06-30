@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.4';
+const VERSION = '1.4.5';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -220,7 +220,7 @@ export default function Detector() {
             kenteken: raw,
             display: localDisplayKenteken(raw),
             merk: '', model: '',
-            bouwjaar: null, catalogusprijs: null, schatting0100: null,
+            bouwjaar: null, catalogusprijs: null, schatting0100: null, accelBron: null,
             detectedAt: Date.now(),
           });
         }
