@@ -12,34 +12,47 @@
 
 .entry {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(8px);
-  overflow: hidden;
-  flex-wrap: nowrap;
+  gap: 16px;
+  padding: 12px 20px;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(10px);
 }
 
+/* Groot kenteken links, vaste breedte zodat kolom uitlijnt */
 .kenteken {
-  font-size: 16px;
-  font-weight: 800;
+  font-size: 24px;
+  font-weight: 900;
   color: #FFD700;
-  letter-spacing: 1px;
+  letter-spacing: 1.5px;
   white-space: nowrap;
   flex-shrink: 0;
+  min-width: 120px;
 }
 
-.divider {
-  color: rgba(255, 255, 255, 0.35);
-  font-size: 12px;
-  flex-shrink: 0;
+/* Details rechts: twee regels boven elkaar */
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
 }
 
-.meta {
+.merkModel {
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats {
   font-size: 14px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.85);
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.60);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

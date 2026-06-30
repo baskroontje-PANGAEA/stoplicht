@@ -12,17 +12,11 @@ interface Props {
   entries: PlateEntry[];
 }
 
-const SHOW_MS = 60_000; // 1 minuut zichtbaar
-
-function formatPrice(cents: number | null): string {
-  if (!cents) return '—';
-  return `€ ${cents.toLocaleString('nl-NL')}`;
-}
+const SHOW_MS = 60_000;
 
 export default function PlateBar({ entries }: Props) {
   const [now, setNow] = useState(Date.now());
 
-  // Herteken elke 5s zodat verlopen kaarten verdwijnen
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 5_000);
     return () => clearInterval(t);
@@ -33,25 +27,25 @@ export default function PlateBar({ entries }: Props) {
 
   return (
     <div className={styles.bar}>
-      {visible.map((e) => (
-        <div key={e.kenteken + e.detectedAt} className={styles.entry}>
-          <span className={styles.kenteken}>{e.display}</span>
-          <span className={styles.divider}>•</span>
-          <span className={styles.meta}>
-            {e.merk} {e.model}
-          </span>
-          <span className={styles.divider}>•</span>
-          <span className={styles.meta}>{e.bouwjaar ?? '—'}</span>
-          <span className={styles.divider}>•</span>
-          <span className={styles.meta}>{formatPrice(e.catalogusprijs)}</span>
-          {e.schatting0100 && (
-            <>
-              <span className={styles.divider}>•</span>
-              <span className={styles.meta}>0–100: ~{e.schatting0100}s</span>
-            </>
-          )}
-        </div>
-      ))}
+      {visible.map((e) => {
+        const merkModel = [e.merk, e.model].filter(Boolean).join(' ') || null;
+        const stats = [
+          e.bouwjaar ?? null,
+          e.catalogusprijs ? `€ ${e.catalogusprijs.toLocaleString('nl-NL')}` : null,
+          e.schatting0100 ? `0–100: ~${e.schatting0100}s` : null,
+        ].filter(Boolean).join('  ·  ');
+
+        return (
+          <div key={e.kenteken + e.detectedAt} className={styles.entry}>
+            <span className={styles.kenteken}>{e.display}</span>
+            <div className={styles.details}>
+              {merkModel && <span className={styles.merkModel}>{merkModel}</span>}
+              {stats && <span className={styles.stats}>{stats}</span>}
+              {!merkModel && !stats && <span className={styles.stats}>Niet gevonden in RDW</span>}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

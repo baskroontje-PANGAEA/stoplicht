@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate } from '@/lib/plateDetect';
 import { opzoekKenteken } from '@/lib/rdw';
 
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -368,7 +368,7 @@ export default function Detector() {
 
   const activePlates = plateEntries.filter((e) => Date.now() - e.detectedAt < 60_000);
   const indicatorBottom = activePlates.length > 0
-    ? activePlates.length * 48 + 20
+    ? activePlates.length * 58 + 20
     : 44;
 
   return (
