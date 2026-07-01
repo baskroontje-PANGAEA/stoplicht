@@ -37,21 +37,17 @@ export async function opzoekKentekenRdw(raw: string): Promise<KentekenResult> {
   const bouwjaar = dateStr.length >= 4 ? parseInt(dateStr.slice(0, 4)) : null;
   const catalogusprijs = v.catalogusprijs ? parseInt(v.catalogusprijs) : null;
 
-  // Vermogen per brandstofsoort uit RDW:
-  //   Benzine / diesel / LPG / waterstof → nettomaximumvermogen
-  //   Elektrisch (EV / PHEV e-motor)     → netto_max_vermogen_elektrisch
-  //                                         (fallback: nominaal_continu_maximumvermogen)
-  // Bij PHEV: sommeer ICE-vermogen + elektrisch motorvermogen.
+  // Per brandstofentry nemen we het maximum van alle drie vermogenvelden.
+  // RDW bewaart ICE-vermogen in nettomaximumvermogen, EV-vermogen in
+  // netto_max_vermogen_elektrisch (peak) of nominaal_continu_maximumvermogen (continu).
+  // Math.max voorkomt problemen met spellingsvarianten van brandstof_omschrijving.
+  // Bij PHEV (benzine + elektrisch entries): beide entries worden opgeteld.
   let totalKw = 0;
   for (const f of brandstoffen as any[]) {
-    const type = String(f.brandstof_omschrijving ?? '').toLowerCase();
-    if (type.includes('elektrisch')) {
-      const peak = parseFloat(f.netto_max_vermogen_elektrisch      ?? '0') || 0;
-      const cont = parseFloat(f.nominaal_continu_maximumvermogen   ?? '0') || 0;
-      totalKw += peak || cont;
-    } else {
-      totalKw += parseFloat(f.nettomaximumvermogen ?? '0') || 0;
-    }
+    const ice  = parseFloat(f.nettomaximumvermogen             ?? '0') || 0;
+    const evP  = parseFloat(f.netto_max_vermogen_elektrisch    ?? '0') || 0;
+    const evC  = parseFloat(f.nominaal_continu_maximumvermogen ?? '0') || 0;
+    totalKw += Math.max(ice, evP, evC);
   }
   const vermogenKw = totalKw > 0 ? Math.round(totalKw) : null;
   const vermogenPk = vermogenKw ? Math.round(vermogenKw * 1.36) : null;
