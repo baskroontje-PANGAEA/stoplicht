@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.6';
+const VERSION = '1.5.7';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -311,7 +311,7 @@ export default function Detector() {
     } finally {
       clearTimeout(busyTimeout);
       ocrBusyRef.current = false;
-      setPlatePreviewUrl('');
+      setTimeout(() => setPlatePreviewUrl(''), 4_000); // 4s zichtbaar voor debug
     }
   }
 
