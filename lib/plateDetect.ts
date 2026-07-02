@@ -22,7 +22,9 @@ export function detectPlates(
     for (let px = 0; px < imgW; px += STEP) {
       const i = (py * imgW + px) * 4;
       const r = data[i], g = data[i + 1], b = data[i + 2];
-      if (r > 158 && g > 128 && b < 105 && r > b + 73 && g > b + 43) {
+      // Versoepelde geel-detectie: vangt ook geel onder mindere belichting.
+      // Origineel: r>158, g>128, b<105, r>b+73, g>b+43
+      if (r > 130 && g > 100 && b < 130 && r > b + 40 && g > b + 15) {
         pts.push([px, py]);
       }
     }
