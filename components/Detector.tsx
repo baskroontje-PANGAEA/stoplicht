@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.1';
+const VERSION = '1.5.2';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -40,6 +40,25 @@ function cleanKenteken(raw: string): string | null {
     if (NL_SIDECODES.some((p) => p.test(sub))) return sub;
   }
   return null;
+}
+
+// Genereer OCR-alternatieven door veelvoorkomende cijfer/letter-verwisselingen
+// per positie te proberen. RDW is de autoriteit: alleen een hit in RDW telt.
+const OCR_SWAPS: Record<string, string> = { S: '5', '5': 'S', B: '8', '8': 'B', G: '6', '6': 'G' };
+function ocrAlternatives(s: string): string[] {
+  const alts: string[] = [];
+  for (let i = 0; i < s.length; i++) {
+    const repl = OCR_SWAPS[s[i]];
+    if (!repl) continue;
+    const alt = s.slice(0, i) + repl + s.slice(i + 1);
+    if (NL_SIDECODES.some((p) => p.test(alt))) alts.push(alt);
+  }
+  return alts;
+}
+
+// Positie-bucket voor stabiliteitstracking van meerdere platen tegelijk.
+function plateBucket(p: PlateBox): string {
+  return `${Math.round(p.cx / 150)}_${Math.round(p.cy / 150)}`;
 }
 
 // Module-level Tesseract worker (hergebruikt over meerdere OCR-runs)
@@ -145,9 +164,9 @@ export default function Detector() {
   const frameRef      = useRef(0);
   const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Kenteken-tracking
-  const stablePlateRef = useRef<(PlateBox & { count: number }) | null>(null);
-  const ocrBusyRef     = useRef(false);
+  // Kenteken-tracking (per positie-bucket, zodat meerdere platen tegelijk werken)
+  const stablePlatesRef = useRef(new Map<string, PlateBox & { count: number }>());
+  const ocrBusyRef      = useRef(false);
   const nextOCRAtRef   = useRef(0); // timestamp: wacht na mislukte scan
   const seenPlatesRef  = useRef<Set<string>>(new Set()); // 5-min cache tegen dubbele OCR
 
@@ -214,14 +233,31 @@ export default function Detector() {
         setTimeout(() => seenPlatesRef.current.delete(cleaned), 300_000);
         setOcrStatus(`Kenteken: ${cleaned}`);
 
-        // Fase 1: RDW opzoeken en direct tonen (~400ms)
-        const result = await opzoekKentekenRdw(cleaned).catch(() => null);
+        // Fase 1a: directe RDW-lookup
+        let result = await opzoekKentekenRdw(cleaned).catch(() => null);
+        let actualKenteken = cleaned;
+
+        // Fase 1b: RDW niet gevonden → probeer OCR-verwisselingen (S↔5, B↔8, G↔6)
+        if (!result) {
+          for (const alt of ocrAlternatives(cleaned)) {
+            if (seenPlatesRef.current.has(alt)) continue;
+            const altResult = await opzoekKentekenRdw(alt).catch(() => null);
+            if (altResult) {
+              result = altResult;
+              actualKenteken = alt;
+              seenPlatesRef.current.add(alt);
+              setTimeout(() => seenPlatesRef.current.delete(alt), 300_000);
+              break;
+            }
+          }
+        }
+
         if (result) {
           addPlateEntry({ ...result, detectedAt: Date.now() });
         } else {
           addPlateEntry({
-            kenteken: cleaned,
-            display: displayKenteken(cleaned),
+            kenteken: actualKenteken,
+            display: displayKenteken(actualKenteken),
             merk: '', model: '',
             bouwjaar: null, catalogusprijs: null,
             vermogenKw: null, vermogenPk: null,
@@ -236,7 +272,7 @@ export default function Detector() {
           opzoekCarquery(result.merk, result.model, result.bouwjaar)
             .then((accel) => {
               if (accel !== null) {
-                updatePlateEntry(cleaned, { accel0100: accel, accelBron: 'carquery' });
+                updatePlateEntry(result!.kenteken, { accel0100: accel, accelBron: 'carquery' });
               }
             });
         }
@@ -350,25 +386,30 @@ export default function Detector() {
       }
       ctx.setLineDash([]);
 
-      // Stabiliteitscheck: OCR na 5 stabiele frames (~1.25s)
-      if (plates.length > 0) {
-        const best = plates[0];
-        const prev = stablePlateRef.current;
+      // Stabiliteitstracking per plaat-positie — OCR na 5 stabiele frames (~1.25s).
+      // Meerdere platen tegelijk: elke positie-bucket heeft eigen teller.
+      const nowVisible = new Set<string>();
+      for (const plate of plates) {
+        const key = plateBucket(plate);
+        nowVisible.add(key);
+        const prev = stablePlatesRef.current.get(key);
         const stable = prev &&
-          Math.abs(best.x - prev.x) < 70 &&
-          Math.abs(best.y - prev.y) < 55 &&
-          Math.abs(best.w - prev.w) < 80;
+          Math.abs(plate.cx - prev.cx) < 70 &&
+          Math.abs(plate.cy - prev.cy) < 55;
 
-        if (stable) {
-          stablePlateRef.current = { ...best, count: prev.count + 1 };
-          if (prev.count >= 5 && !ocrBusyRef.current) {
-            runOCR(best);
+        if (stable && prev) {
+          const count = prev.count + 1;
+          stablePlatesRef.current.set(key, { ...plate, count });
+          if (count >= 5 && !ocrBusyRef.current) {
+            runOCR(plate);
           }
         } else {
-          stablePlateRef.current = { ...best, count: 1 };
+          stablePlatesRef.current.set(key, { ...plate, count: 1 });
         }
-      } else {
-        stablePlateRef.current = null;
+      }
+      // Verwijder buckets voor platen die niet meer zichtbaar zijn
+      for (const key of Array.from(stablePlatesRef.current.keys())) {
+        if (!nowVisible.has(key)) stablePlatesRef.current.delete(key);
       }
     } catch (_) {}
 
