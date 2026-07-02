@@ -22,9 +22,9 @@ export function detectPlates(
     for (let px = 0; px < imgW; px += STEP) {
       const i = (py * imgW + px) * 4;
       const r = data[i], g = data[i + 1], b = data[i + 2];
-      // Geel-detectie: voldoende marge voor wisselende belichting, maar g>r*0.55
-      // filtert oranje/rood (remlichten, banners) eruit — bij echt geel is g≥55% van r.
-      if (r > 130 && g > 100 && b < 130 && r > b + 40 && g > b + 15 && g > r * 0.55) {
+      // Geel-detectie: voldoende marge voor wisselende belichting, maar g>r*0.50
+      // filtert oranje/rood (remlichten, banners) eruit — bij echt geel is g≥50% van r.
+      if (r > 130 && g > 100 && b < 130 && r > b + 40 && g > b + 15 && g > r * 0.50) {
         pts.push([px, py]);
       }
     }

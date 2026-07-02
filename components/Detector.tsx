@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.5';
+const VERSION = '1.5.6';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -70,7 +70,7 @@ async function getOCRWorker() {
   _ocrWorker = await createWorker('eng', 1, { logger: () => {} });
   await _ocrWorker.setParameters({
     tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-    tessedit_pageseg_mode: '7', // single text line
+    tessedit_pageseg_mode: '8', // single word (kenteken = één woord zonder spaties)
   });
   return _ocrWorker;
 }
@@ -181,7 +181,8 @@ export default function Detector() {
   const [light, setLight]               = useState<LightState>('none');
   const [started, setStarted]           = useState(false);
   const [plateEntries, setPlateEntries] = useState<PlateEntry[]>([]);
-  const [ocrStatus, setOcrStatus]       = useState<string>(''); // zichtbare debug-status
+  const [ocrStatus, setOcrStatus]       = useState<string>('');
+  const [platePreviewUrl, setPlatePreviewUrl] = useState<string>(''); // OCR-tussenplaatje
 
   function addPlateEntry(entry: PlateEntry) {
     setPlateEntries((prev) => {
@@ -244,6 +245,7 @@ export default function Detector() {
 
     try {
       const preprocessed = preprocessPlate(video, box);
+      setPlatePreviewUrl(preprocessed.toDataURL()); // toon wat Tesseract ziet
       const worker = await getOCRWorker();
       const { data } = await worker.recognize(preprocessed);
       const cleaned = cleanKenteken(data.text as string);
@@ -309,6 +311,7 @@ export default function Detector() {
     } finally {
       clearTimeout(busyTimeout);
       ocrBusyRef.current = false;
+      setPlatePreviewUrl('');
     }
   }
 
@@ -555,6 +558,11 @@ export default function Detector() {
             {light === 'green'   && 'Groen'}
           </span>
         </div>
+      )}
+
+      {/* OCR tussenplaatje: toont exact wat Tesseract ziet (B&W drempel) */}
+      {started && status === 'ready' && platePreviewUrl && (
+        <img src={platePreviewUrl} className={styles.platePreview} alt="" />
       )}
 
       {/* OCR scan-status: tijdelijk zichtbaar boven de kentekenbalk */}

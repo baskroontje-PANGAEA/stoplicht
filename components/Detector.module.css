@@ -176,6 +176,22 @@
   margin-top: -12px;
 }
 
+/* Preprocessed plate preview: toont de B&W input die naar Tesseract gaat */
+.platePreview {
+  position: absolute;
+  bottom: 170px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 85vw;
+  height: 80px;
+  width: auto;
+  border: 2px solid rgba(255, 215, 0, 0.8);
+  border-radius: 4px;
+  background: #000;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
 /* Tijdelijke OCR-statusbadge (verdwijnt na scannen) */
 .ocrBadge {
   position: absolute;
