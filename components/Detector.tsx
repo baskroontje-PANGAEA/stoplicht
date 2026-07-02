@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -32,8 +32,14 @@ function cleanKenteken(raw: string): string | null {
     .replace(/I/g, '1')   // I bestaat niet op NL-kentekens
     .replace(/O/g, '0')   // O bestaat niet op NL-kentekens
     .replace(/[^A-Z0-9]/g, '');
-  if (s.length < 5 || s.length > 8) return null;
-  return NL_SIDECODES.some((p) => p.test(s)) ? s : null;
+  // Alle NL-sidecodes zijn exact 6 tekens. Schuif een raam van 6 chars over de
+  // volledige OCR-string — werkt ook als Tesseract extra tekens leest zoals
+  // "NL" van de EU-strip of een losstaand karakter aan de rand.
+  for (let i = 0; i <= s.length - 6; i++) {
+    const sub = s.slice(i, i + 6);
+    if (NL_SIDECODES.some((p) => p.test(sub))) return sub;
+  }
+  return null;
 }
 
 // Module-level Tesseract worker (hergebruikt over meerdere OCR-runs)
