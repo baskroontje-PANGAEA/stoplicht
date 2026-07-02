@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.2';
+const VERSION = '1.5.3';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -165,10 +165,16 @@ export default function Detector() {
   const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Kenteken-tracking (per positie-bucket, zodat meerdere platen tegelijk werken)
-  const stablePlatesRef = useRef(new Map<string, PlateBox & { count: number }>());
-  const ocrBusyRef      = useRef(false);
-  const nextOCRAtRef   = useRef(0); // timestamp: wacht na mislukte scan
-  const seenPlatesRef  = useRef<Set<string>>(new Set()); // 5-min cache tegen dubbele OCR
+  const stablePlatesRef  = useRef(new Map<string, PlateBox & { count: number }>());
+  const ocrBusyRef       = useRef(false);
+  const nextOCRAtRef     = useRef(0);
+  const seenPlatesRef    = useRef<Set<string>>(new Set());
+
+  // Camera-zoom: inzoomen zodra een gele plaat gevonden is
+  const videoTrackRef    = useRef<MediaStreamTrack | null>(null);
+  const appliedZoomRef   = useRef(1);
+  const zoomAppliedRef   = useRef(false);
+  const noPlateFramesRef = useRef(0);
 
   const [status, setStatus]             = useState<AppStatus>('idle');
   const [light, setLight]               = useState<LightState>('none');
@@ -196,6 +202,19 @@ export default function Detector() {
       if (newState === 'green') playHighBeep(audioRef.current);
     }
     prevLightRef.current = newState;
+  }
+
+  async function applyZoom(level: number) {
+    const track = videoTrackRef.current;
+    if (!track) return;
+    try {
+      const cap = track.getCapabilities() as any;
+      if (!cap?.zoom) return;
+      const z = Math.max(cap.zoom.min ?? 1, Math.min(cap.zoom.max ?? 8, level));
+      if (Math.abs(z - appliedZoomRef.current) < 0.15) return; // al bijna correct
+      await (track.applyConstraints as any)({ advanced: [{ zoom: z }] });
+      appliedZoomRef.current = z;
+    } catch (_) {}
   }
 
   function updateZoom(bx: number, by: number, bw: number, bh: number) {
@@ -411,6 +430,30 @@ export default function Detector() {
       for (const key of Array.from(stablePlatesRef.current.keys())) {
         if (!nowVisible.has(key)) stablePlatesRef.current.delete(key);
       }
+
+      // Camera-zoom: inzoomen zodra een gele plaat gevonden is.
+      // Doel: plaat vult ~30% van de framebreedte zodat OCR scherp werkt.
+      // Uitzoomen zodra er 5 seconden (~20 frames) geen plaat meer zichtbaar is.
+      if (plates.length > 0) {
+        noPlateFramesRef.current = 0;
+        if (!zoomAppliedRef.current) {
+          const pw = plates[0].pw;
+          if (pw > 10) {
+            const target = (canvas.width * 0.30) / pw;
+            if (target > 1.2) {
+              applyZoom(target);
+              zoomAppliedRef.current = true;
+            }
+          }
+        }
+      } else {
+        noPlateFramesRef.current++;
+        if (noPlateFramesRef.current >= 20) {
+          applyZoom(1);
+          zoomAppliedRef.current = false;
+          noPlateFramesRef.current = 0;
+        }
+      }
     } catch (_) {}
 
     timerRef.current = setTimeout(runDetection, 250);
@@ -424,6 +467,8 @@ export default function Detector() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
       });
+      const tracks = stream.getVideoTracks();
+      if (tracks.length > 0) videoTrackRef.current = tracks[0];
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -446,6 +491,7 @@ export default function Detector() {
       runningRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
       audioRef.current?.close();
+      videoTrackRef.current = null;
       const video = videoRef.current;
       if (video?.srcObject) (video.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
     };
