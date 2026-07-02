@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.3';
+const VERSION = '1.5.4';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -413,13 +413,13 @@ export default function Detector() {
         nowVisible.add(key);
         const prev = stablePlatesRef.current.get(key);
         const stable = prev &&
-          Math.abs(plate.cx - prev.cx) < 70 &&
-          Math.abs(plate.cy - prev.cy) < 55;
+          Math.abs(plate.cx - prev.cx) < 120 &&
+          Math.abs(plate.cy - prev.cy) < 90;
 
         if (stable && prev) {
           const count = prev.count + 1;
           stablePlatesRef.current.set(key, { ...plate, count });
-          if (count >= 5 && !ocrBusyRef.current) {
+          if (count >= 3 && !ocrBusyRef.current) {
             runOCR(plate);
           }
         } else {

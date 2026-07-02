@@ -132,7 +132,7 @@ export function detectPlates(
 
 // Schaal en deskew het kentekengebied voor Tesseract.
 export function preprocessPlate(video: HTMLVideoElement, box: PlateBox): HTMLCanvasElement {
-  const TARGET_H = 80;
+  const TARGET_H = 120;
   const { cx, cy, pw, ph, angle } = box;
   const absAngle = Math.abs(angle);
 
