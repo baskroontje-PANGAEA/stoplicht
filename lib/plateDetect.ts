@@ -116,6 +116,11 @@ export function detectPlates(
       if (y < y0) y0 = y; if (y > y1) y1 = y;
     }
 
+    // Dichtheidscheck: bij een echte plaat is ≥25% van de bbox-pixels geel.
+    // Dunne blobs (rijstrookmarkering, reflectoren) vallen hieronder.
+    const bboxSteps = ((x1 - x0) / STEP) * ((y1 - y0) / STEP);
+    if (blob.length / Math.max(bboxSteps, 1) < 0.25) continue;
+
     plates.push({
       x: Math.max(0, x0 - STEP),
       y: Math.max(0, y0 - STEP),
@@ -161,11 +166,30 @@ export function preprocessPlate(video: HTMLVideoElement, box: PlateBox): HTMLCan
     ctx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, out.width, out.height);
   }
 
-  // Grijswaarden + drempel: geel → wit, letters → zwart
+  // Grijswaarden → Otsu automatische drempel (beter dan vaste 110 bij wisselende belichting)
   const d = ctx.getImageData(0, 0, out.width, out.height);
-  for (let i = 0; i < d.data.length; i += 4) {
-    const gray = 0.299 * d.data[i] + 0.587 * d.data[i + 1] + 0.114 * d.data[i + 2];
-    const bw = gray > 110 ? 255 : 0;
+  const n = d.data.length / 4;
+  const hist = new Uint32Array(256);
+  const grays = new Uint8Array(n);
+  for (let i = 0, j = 0; i < d.data.length; i += 4, j++) {
+    const gr = Math.round(0.299 * d.data[i] + 0.587 * d.data[i + 1] + 0.114 * d.data[i + 2]);
+    grays[j] = gr;
+    hist[gr]++;
+  }
+  // Otsu: maximaliseer inter-klasse variantie
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, maxVar = 0, otsu = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = n - wB; if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxVar) { maxVar = v; otsu = t; }
+  }
+  for (let i = 0, j = 0; i < d.data.length; i += 4, j++) {
+    const bw = grays[j] > otsu ? 255 : 0;
     d.data[i] = d.data[i + 1] = d.data[i + 2] = bw;
     d.data[i + 3] = 255;
   }
