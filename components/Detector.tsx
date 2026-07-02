@@ -6,7 +6,7 @@ import PlateBar, { type PlateEntry } from './PlateBar';
 import { detectPlates, preprocessPlate, type PlateBox } from '@/lib/plateDetect';
 import { opzoekKentekenRdw, opzoekCarquery, displayKenteken } from '@/lib/rdw';
 
-const VERSION = '1.5.8';
+const VERSION = '1.5.9';
 
 type LightState = 'none' | 'red' | 'yellow' | 'green' | 'unknown';
 type AppStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -25,6 +25,7 @@ const NL_SIDECODES = [
   /^\d{2}[A-Z]{3}\d$/,          // SC9:  NN-LLL-N
   /^\d[A-Z]{3}\d{2}$/,          // SC10: N-LLL-NN
   /^[A-Z]\d{2}[A-Z]{3}$/,       // SC11: L-NN-LLL  (V-94-HLL, vanaf ~2019)
+  /^[A-Z]{3}\d{2}[A-Z]$/,       // SC12: LLL-NN-L  (JSF-58-X, vanaf ~2024)
 ];
 
 function cleanKenteken(raw: string): string | null {
